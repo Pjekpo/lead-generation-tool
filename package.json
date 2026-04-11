@@ -1,0 +1,24 @@
+{
+  "name": "lead-generation-tool",
+  "version": "1.0.0",
+  "description": "Web-based lead generation tool powered by Apify scrapers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "lead-generation",
+    "apify",
+    "scraper",
+    "google-maps",
+    "facebook"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "apify-client": "^2.12.1"
+  }
+}

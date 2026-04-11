@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lead Generation Tool</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <div class="header-bar">
+          <div>
+            <p class="eyebrow">Apify lead workflows</p>
+            <h1>Lead Generation Tool</h1>
+            <p>Run one source at a time with the actual Google Maps and Facebook scraper inputs.</p>
+          </div>
+
+          <div class="header-actions">
+            <span id="authStatePill" class="auth-pill hidden">Signed in</span>
+            <button id="logoutBtn" type="button" class="secondary-btn hidden">Log Out</button>
+          </div>
+        </div>
+      </header>
+
+      <section id="authPanel" class="panel auth-panel">
+        <div class="auth-copy">
+          <h2>Secure access</h2>
+          <p>Sign in before running searches. The app uses a server-side session cookie and rate limits API requests.</p>
+        </div>
+
+        <form id="loginForm" class="auth-form">
+          <label class="field">
+            <span>Username</span>
+            <input id="loginUsername" name="username" type="text" value="admin" autocomplete="username" />
+          </label>
+
+          <label class="field">
+            <span>Password</span>
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" />
+          </label>
+
+          <button id="loginBtn" type="submit">Sign In</button>
+          <p id="loginStatus" class="status">Checking session.</p>
+        </form>
+      </section>
+
+      <section id="sourceGate" class="gate hidden">
+        <div class="gate-copy">
+          <h2>Choose a source to start</h2>
+          <p>Google Maps uses search terms, location query, and per-search limits. Facebook uses page or profile URLs and date filters.</p>
+        </div>
+        <button id="openSourcePickerBtn" type="button">Choose Source</button>
+      </section>
+
+      <div id="appSections" class="workspace hidden">
+        <section class="panel controls-panel">
+          <form id="leadForm" class="form" novalidate>
+            <div class="selected-source-bar">
+              <span id="selectedSourceLabel">Source: Not selected</span>
+              <button id="changeSourceBtn" type="button" class="secondary-btn">Change Source</button>
+            </div>
+
+            <div class="form-section">
+              <div class="section-heading">
+                <h2>Lead Filters</h2>
+                <p>These values help rank leads and fill source defaults when a source field is blank.</p>
+              </div>
+
+              <div class="form-grid">
+                <label class="field">
+                  <span>Company Type</span>
+                  <input id="companyType" name="companyType" type="text" placeholder="e.g. Roofing contractor" />
+                </label>
+
+                <label class="field checkbox-field">
+                  <span>Company Type Filter</span>
+                  <span class="inline-toggle">
+                    <input id="useCompanyType" name="useCompanyType" type="checkbox" checked />
+                    Use company type in the query
+                  </span>
+                </label>
+
+                <label class="field field-span-full">
+                  <span>Service Need / Buyer Intent</span>
+                  <input
+                    id="serviceNeed"
+                    name="serviceNeed"
+                    type="text"
+                    placeholder="e.g. someone to build a website, landscaping help"
+                  />
+                </label>
+
+                <label class="field">
+                  <span>Location</span>
+                  <input id="location" name="location" type="text" placeholder="e.g. Houston, TX" />
+                  <small class="field-help">Used for scoring and as a fallback for source-specific location fields.</small>
+                </label>
+
+                <label class="field">
+                  <span>Time Filter</span>
+                  <select id="timeWindow" name="timeWindow">
+                    <option value="any">Any time</option>
+                    <option value="24h">Last 24 hours</option>
+                    <option value="7d">Last week</option>
+                    <option value="14d">Last 2 weeks</option>
+                    <option value="30d">Last month</option>
+                    <option value="60d">Last 2 months</option>
+                    <option value="90d">Last 3 months</option>
+                    <option value="180d">Last 6 months</option>
+                  </select>
+                  <small class="field-help">Used as a fallback when a source-specific date field is blank.</small>
+                </label>
+
+                <label class="field">
+                  <span>Number of Leads</span>
+                  <input id="leadCount" name="leadCount" type="number" min="1" max="500" value="25" required />
+                </label>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <div class="section-heading">
+                <h2>Source Inputs</h2>
+                <p>Enter the fields required by the selected scraper.</p>
+              </div>
+
+              <fieldset id="sourceOptionsFieldset" class="source-options">
+                <legend>Source Inputs</legend>
+
+                <div id="googleMapsOptions" class="source-option-group">
+                  <label class="field field-span-full">
+                    <span>Google Maps Search Terms</span>
+                    <textarea
+                      id="googleMapsSearchTerms"
+                      name="googleMapsSearchTerms"
+                      rows="4"
+                      placeholder="roofing contractor&#10;solar installer&#10;plumber"
+                    ></textarea>
+                    <small class="field-help">One search term per line or comma separated.</small>
+                  </label>
+
+                  <label class="field">
+                    <span>Google Maps Location Query</span>
+                    <input
+                      id="googleMapsLocationQuery"
+                      name="googleMapsLocationQuery"
+                      type="text"
+                      placeholder="e.g. Houston, Texas, USA"
+                    />
+                    <small class="field-help">Use one location per run.</small>
+                  </label>
+
+                  <label class="field">
+                    <span>Max Places Per Search</span>
+                    <input
+                      id="googleMapsMaxCrawledPlacesPerSearch"
+                      name="googleMapsMaxCrawledPlacesPerSearch"
+                      type="number"
+                      min="1"
+                      max="500"
+                      value="30"
+                    />
+                  </label>
+
+                  <label class="field">
+                    <span>Language</span>
+                    <input
+                      id="googleMapsLanguage"
+                      name="googleMapsLanguage"
+                      type="text"
+                      value="en"
+                      placeholder="e.g. en"
+                    />
+                  </label>
+                </div>
+
+                <div id="facebookOptions" class="source-option-group">
+                  <label class="field field-span-full">
+                    <span>Facebook Page / Profile URLs</span>
+                    <textarea
+                      id="facebookStartUrls"
+                      name="facebookStartUrls"
+                      rows="4"
+                      placeholder="https://www.facebook.com/yourpage&#10;https://www.facebook.com/anotherpage"
+                    ></textarea>
+                    <small class="field-help">One public URL per line.</small>
+                  </label>
+
+                  <label class="field">
+                    <span>Results Limit</span>
+                    <input
+                      id="facebookResultsLimit"
+                      name="facebookResultsLimit"
+                      type="number"
+                      min="1"
+                      max="500"
+                      value="25"
+                    />
+                  </label>
+
+                  <label class="field checkbox-field">
+                    <span>Video Transcript</span>
+                    <span class="inline-toggle">
+                      <input id="facebookCaptionText" name="facebookCaptionText" type="checkbox" />
+                      Include video transcript when available
+                    </span>
+                  </label>
+
+                  <label class="field">
+                    <span>Posts Newer Than</span>
+                    <input
+                      id="facebookOnlyPostsNewerThan"
+                      name="facebookOnlyPostsNewerThan"
+                      type="text"
+                      placeholder="e.g. 2026-04-01 or 7 days"
+                    />
+                  </label>
+
+                  <label class="field">
+                    <span>Posts Older Than</span>
+                    <input
+                      id="facebookOnlyPostsOlderThan"
+                      name="facebookOnlyPostsOlderThan"
+                      type="text"
+                      placeholder="e.g. 2026-04-10 or 2 days"
+                    />
+                  </label>
+                </div>
+              </fieldset>
+            </div>
+
+            <button id="submitBtn" type="submit">Generate Leads</button>
+          </form>
+        </section>
+
+        <section class="panel results-panel">
+          <div class="results-header">
+            <div>
+              <h2>Results</h2>
+              <p id="status" class="status">Waiting for request.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="resultsTable">
+              <thead>
+                <tr>
+                  <th>Company Name</th>
+                  <th>Person / Username</th>
+                  <th>Phone Number</th>
+                  <th>Type</th>
+                  <th>Address</th>
+                  <th>Source</th>
+                  <th>Source URL</th>
+                  <th>Posted</th>
+                  <th>Sentiment</th>
+                  <th>Intent Score</th>
+                  <th>Need Evidence</th>
+                  <th>Qualified</th>
+                </tr>
+              </thead>
+              <tbody id="resultsBody">
+                <tr>
+                  <td colspan="12" class="placeholder">No leads yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div id="sourceModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sourceModalTitle">
+      <div class="modal-card">
+        <h2 id="sourceModalTitle">Select Source</h2>
+        <div class="source-grid">
+          <button type="button" class="source-choice" data-source="google_maps">
+            <span class="source-choice-title">Google Maps</span>
+            <span class="source-choice-meta">compass/crawler-google-places</span>
+          </button>
+          <button type="button" class="source-choice" data-source="facebook">
+            <span class="source-choice-title">Facebook</span>
+            <span class="source-choice-meta">apify/facebook-posts-scraper</span>
+          </button>
+        </div>
+        <button id="closeSourceModalBtn" type="button" class="secondary-btn">Close</button>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
