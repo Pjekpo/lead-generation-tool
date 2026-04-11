@@ -120,6 +120,20 @@ Minimum production setup:
 - Keep `.env` out of version control
 - Deploy the Node server, not a static-only export
 
+## Deploy
+
+This repo includes a Render blueprint in [render.yaml](c:/Users/prais/Documents/Ekpo%20AI%20Projects/Lead%20Generation%20tool/render.yaml).
+
+On Render:
+
+1. Create a new Blueprint service from this GitHub repo
+2. Set the required secret env vars:
+   - `APP_ADMIN_PASSWORD`
+   - `APIFY_TOKEN`
+   - `APIFY_ACTOR_GOOGLE_MAPS`
+   - `APIFY_ACTOR_FACEBOOK`
+3. Deploy
+
 ## Memory tuning (fix for memory-limit warnings)
 
 If Apify shows a memory-limit warning (for example requested `4096MB`), lower memory in `.env`:
