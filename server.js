@@ -1,7 +1,7 @@
 const path = require("path");
-const crypto = require("crypto");
 const express = require("express");
 const { ApifyClient } = require("apify-client");
+require("dotenv").config({ path: path.join(__dirname, ".env.local") });
 require("dotenv").config();
 
 const app = express();
@@ -12,18 +12,9 @@ const MAX_LEADS = 500;
 const SCORE_THRESHOLD = Number(process.env.LEAD_QUALIFICATION_THRESHOLD || 65);
 const DEFAULT_WAIT_SECS = toPositiveInt(process.env.APIFY_WAIT_SECS) || 180;
 const DEFAULT_MEMORY_MBYTES = toPositiveInt(process.env.APIFY_DEFAULT_MEMORY_MBYTES) || 1024;
-const SOURCE_RUN_CONCURRENCY = toPositiveInt(process.env.APIFY_SOURCE_CONCURRENCY) || 1;
-const SESSION_COOKIE_NAME = "leadgen_session";
-const SESSION_TTL_MS = (toPositiveInt(process.env.APP_SESSION_TTL_HOURS) || 12) * 60 * 60 * 1000;
-const AUTH_RATE_LIMIT_MAX = toPositiveInt(process.env.APP_AUTH_MAX_ATTEMPTS) || 5;
-const AUTH_RATE_LIMIT_WINDOW_MS =
-  (toPositiveInt(process.env.APP_AUTH_WINDOW_MINUTES) || 10) * 60 * 1000;
 const API_RATE_LIMIT_MAX = toPositiveInt(process.env.APP_API_MAX_REQUESTS) || 30;
 const API_RATE_LIMIT_WINDOW_MS =
   (toPositiveInt(process.env.APP_API_WINDOW_MINUTES) || 15) * 60 * 1000;
-const ADMIN_USERNAME = sanitizeText(process.env.APP_ADMIN_USERNAME || "admin") || "admin";
-const ADMIN_PASSWORD = String(process.env.APP_ADMIN_PASSWORD || "");
-const sessionStore = new Map();
 const rateLimitStore = new Map();
 
 const TIME_WINDOWS = {
@@ -130,16 +121,12 @@ const SERVICE_STOPWORDS = new Set([
   "your",
 ]);
 
+const GOOGLE_MAPS_SOURCE = "google_maps";
 const SOURCE_CONFIG = {
   google_maps: {
     key: "google_maps",
     label: "Google Maps",
     actorEnv: "APIFY_ACTOR_GOOGLE_MAPS",
-  },
-  facebook: {
-    key: "facebook",
-    label: "Facebook",
-    actorEnv: "APIFY_ACTOR_FACEBOOK",
   },
 };
 
@@ -152,60 +139,7 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, timestamp: new Date().toISOString() });
 });
 
-app.get("/api/auth/status", (req, res) => {
-  const configured = hasConfiguredAdminAccess();
-  const session = getSessionFromRequest(req);
-
-  res.set("Cache-Control", "no-store");
-  res.json({
-    configured,
-    authenticated: Boolean(session),
-    username: session ? ADMIN_USERNAME : null,
-  });
-});
-
-app.post(
-  "/api/auth/login",
-  createRateLimitMiddleware("auth", AUTH_RATE_LIMIT_MAX, AUTH_RATE_LIMIT_WINDOW_MS),
-  (req, res) => {
-    res.set("Cache-Control", "no-store");
-
-    if (!hasConfiguredAdminAccess()) {
-      return res.status(503).json({
-        error: "Authentication is not configured. Set APP_ADMIN_PASSWORD on the server.",
-      });
-    }
-
-    const username = sanitizeText(req.body.username);
-    const password = String(req.body.password || "");
-
-    if (!isValidAdminLogin(username, password)) {
-      return res.status(401).json({ error: "Invalid username or password." });
-    }
-
-    const sessionId = createSession({ username: ADMIN_USERNAME });
-    setSessionCookie(res, sessionId, req);
-
-    return res.json({
-      ok: true,
-      username: ADMIN_USERNAME,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
-    });
-  }
-);
-
-app.post("/api/auth/logout", requireAuth, (req, res) => {
-  const sessionId = getSessionIdFromRequest(req);
-  if (sessionId) {
-    sessionStore.delete(sessionId);
-  }
-
-  clearSessionCookie(res, req);
-  res.set("Cache-Control", "no-store");
-  res.json({ ok: true });
-});
-
-app.get("/api/sources", requireAuth, (req, res) => {
+app.get("/api/sources", (req, res) => {
   const sources = SOURCE_KEYS.map((key) => {
     const config = SOURCE_CONFIG[key];
     const actorId = process.env[config.actorEnv] || "";
@@ -222,160 +156,122 @@ app.get("/api/sources", requireAuth, (req, res) => {
 
 app.post(
   "/api/leads",
-  requireAuth,
   createRateLimitMiddleware("api", API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS),
   async (req, res) => {
-  const useCompanyType = parseBoolean(req.body.useCompanyType, true);
-  const inputCompanyType = sanitizeText(req.body.companyType);
-  const companyType = useCompanyType ? inputCompanyType : "";
-  const serviceNeed = sanitizeText(req.body.serviceNeed);
-  const location = sanitizeText(req.body.location);
-  const leadCount = Number(req.body.leadCount);
-  const timeWindow = normalizeTimeWindow(req.body.timeWindow);
-  const timeContext = resolveTimeContext(timeWindow);
-  const requestedSources = parseRequestedSources(req.body.sources);
-  const selectedSource = requestedSources[0] || "";
-  const sourceOptions = parseSourceOptions(req.body.sourceOptions);
-  const searchTopic =
-    serviceNeed ||
-    companyType ||
-    sourceOptions.googleMapsSearchTerms[0] ||
-    sourceOptions.googleMapsSearchString;
+    const useCompanyType = parseBoolean(req.body.useCompanyType, true);
+    const inputCompanyType = sanitizeText(req.body.companyType);
+    const companyType = useCompanyType ? inputCompanyType : "";
+    const serviceNeed = sanitizeText(req.body.serviceNeed);
+    const location = sanitizeText(req.body.location);
+    const leadCount = Number(req.body.leadCount);
+    const timeWindow = normalizeTimeWindow(req.body.timeWindow);
+    const timeContext = resolveTimeContext(timeWindow);
+    const source = GOOGLE_MAPS_SOURCE;
+    const sourceOptions = parseSourceOptions(req.body.sourceOptions);
+    const searchTopic =
+      serviceNeed ||
+      companyType ||
+      sourceOptions.googleMapsSearchTerms[0] ||
+      sourceOptions.googleMapsSearchString;
 
-  if (!selectedSource) {
-    return res.status(400).json({ error: "Select exactly one source." });
-  }
-  if (!Number.isInteger(leadCount) || leadCount < 1 || leadCount > MAX_LEADS) {
-    return res.status(400).json({
-      error: `leadCount must be an integer between 1 and ${MAX_LEADS}.`,
+    if (!Number.isInteger(leadCount) || leadCount < 1 || leadCount > MAX_LEADS) {
+      return res.status(400).json({
+        error: `leadCount must be an integer between 1 and ${MAX_LEADS}.`,
+      });
+    }
+
+    const sourceValidationError = validateSourceInput({
+      companyType,
+      serviceNeed,
+      location,
+      sourceOptions,
     });
-  }
-  if (requestedSources.length !== 1) {
-    return res.status(400).json({ error: "Select exactly one source." });
-  }
-  const sourceValidationError = validateSourceInput({
-    source: selectedSource,
-    companyType,
-    serviceNeed,
-    location,
-    sourceOptions,
-  });
-  if (sourceValidationError) {
-    return res.status(400).json({ error: sourceValidationError });
-  }
-  if (!process.env.APIFY_TOKEN) {
-    return res.status(500).json({
-      error: "APIFY_TOKEN is missing. Add it to your .env file.",
-    });
-  }
+    if (sourceValidationError) {
+      return res.status(400).json({ error: sourceValidationError });
+    }
+    if (!process.env.APIFY_TOKEN) {
+      return res.status(500).json({
+        error: "APIFY_TOKEN is missing. Add it to your .env file.",
+      });
+    }
 
-  try {
-    const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
-    const allocation = distributeTargets(leadCount, requestedSources);
-    const scrapeResults = await runWithConcurrency(
-      requestedSources.map((source) => async () => {
-        const config = SOURCE_CONFIG[source];
-        const actorId = process.env[config.actorEnv] || "";
-        const target = allocation[source] || 0;
+    const config = SOURCE_CONFIG[source];
+    const actorId = process.env[config.actorEnv] || "";
+    if (!actorId) {
+      return res.status(500).json({
+        error: `No actor configured for Google Maps. Set ${config.actorEnv} in .env.`,
+      });
+    }
 
-        if (target < 1) {
-          return {
-            source,
-            actorId: actorId || null,
-            target,
-            scraped: 0,
-            leads: [],
-            error: null,
-          };
-        }
-
-        if (!actorId) {
-          return {
-            source,
-            actorId: null,
-            scraped: 0,
-            leads: [],
-            error: `No actor configured for ${source}. Set ${config.actorEnv} in .env.`,
-          };
-        }
-
-        return scrapeSource({
-          client,
-          source,
-          actorId,
-          companyType,
-          serviceNeed,
-          searchTopic,
-          useCompanyType,
-          location,
-          target,
-          timeContext,
-          sourceOptions,
-        });
-      }),
-      SOURCE_RUN_CONCURRENCY
-    );
-
-    const merged = dedupeLeads(scrapeResults.flatMap((result) => result.leads));
-    const ranked = merged.sort((a, b) => {
-      if (b.qualificationScore !== a.qualificationScore) {
-        return b.qualificationScore - a.qualificationScore;
-      }
-      return b.intentScore - a.intentScore;
-    });
-    const limited = ranked.slice(0, leadCount).map(stripInternalFields);
-    const qualifiedCount = limited.filter((lead) => lead.qualified).length;
-    const warnings = scrapeResults
-      .filter((result) => result.error)
-      .map((result) => `${result.source}: ${result.error}`);
-
-    return res.json({
-      meta: {
+    try {
+      const client = new ApifyClient({ token: process.env.APIFY_TOKEN });
+      const scrapeResult = await scrapeSource({
+        client,
+        source,
+        actorId,
         companyType,
-        useCompanyType,
         serviceNeed,
         searchTopic,
+        useCompanyType,
         location,
-        timeWindow: timeContext.key,
-        timeWindowLabel: timeContext.label,
-        sinceDate: timeContext.sinceDateIso || null,
-        requestedLeads: leadCount,
-        returnedLeads: limited.length,
-        qualifiedLeads: qualifiedCount,
-        selectedSources: requestedSources,
-        selectedSource,
-        sourceOptions: {
-          googleMapsSearchTerms: sourceOptions.googleMapsSearchTerms,
-          googleMapsSearchString: sourceOptions.googleMapsSearchString || "",
-          googleMapsLocationQuery: sourceOptions.googleMapsLocationQuery || "",
-          googleMapsMaxCrawledPlacesPerSearch:
-            sourceOptions.googleMapsMaxCrawledPlacesPerSearch || null,
-          googleMapsLanguage: sourceOptions.googleMapsLanguage || "en",
-          facebookStartUrls: sourceOptions.facebookStartUrls,
-          facebookResultsLimit: sourceOptions.facebookResultsLimit || null,
-          facebookCaptionText: sourceOptions.facebookCaptionText,
-          facebookOnlyPostsNewerThan: sourceOptions.facebookOnlyPostsNewerThan || "",
-          facebookOnlyPostsOlderThan: sourceOptions.facebookOnlyPostsOlderThan || "",
-          facebookKeywords: sourceOptions.facebookKeywords,
-          facebookKeywordsCount: sourceOptions.facebookKeywords.length,
+        target: leadCount,
+        timeContext,
+        sourceOptions,
+      });
+
+      const merged = dedupeLeads(scrapeResult.leads);
+      const ranked = merged.sort((a, b) => {
+        if (b.qualificationScore !== a.qualificationScore) {
+          return b.qualificationScore - a.qualificationScore;
+        }
+        return b.intentScore - a.intentScore;
+      });
+      const limited = ranked.slice(0, leadCount).map(stripInternalFields);
+      const qualifiedCount = limited.filter((lead) => lead.qualified).length;
+      const warnings = scrapeResult.error ? [`Google Maps: ${scrapeResult.error}`] : [];
+
+      return res.json({
+        meta: {
+          companyType,
+          useCompanyType,
+          serviceNeed,
+          searchTopic,
+          location,
+          timeWindow: timeContext.key,
+          timeWindowLabel: timeContext.label,
+          sinceDate: timeContext.sinceDateIso || null,
+          requestedLeads: leadCount,
+          returnedLeads: limited.length,
+          qualifiedLeads: qualifiedCount,
+          selectedSource: source,
+          sourceOptions: {
+            googleMapsSearchTerms: sourceOptions.googleMapsSearchTerms,
+            googleMapsSearchString: sourceOptions.googleMapsSearchString || "",
+            googleMapsLocationQuery: sourceOptions.googleMapsLocationQuery || "",
+            googleMapsMaxCrawledPlacesPerSearch:
+              sourceOptions.googleMapsMaxCrawledPlacesPerSearch || null,
+            googleMapsLanguage: sourceOptions.googleMapsLanguage || "en",
+          },
+          warnings,
         },
-        warnings,
-      },
-      sourceResults: scrapeResults.map((result) => ({
-        source: result.source,
-        actorId: result.actorId,
-        target: result.target,
-        scraped: result.scraped,
-        normalized: result.leads.length,
-        error: result.error || null,
-      })),
-      leads: limited,
-    });
-  } catch (error) {
-    const message = error && error.message ? error.message : "Unknown scrape error.";
-    return res.status(500).json({ error: message });
+        sourceResults: [
+          {
+            source: scrapeResult.source,
+            actorId: scrapeResult.actorId,
+            target: scrapeResult.target,
+            scraped: scrapeResult.scraped,
+            normalized: scrapeResult.leads.length,
+            error: scrapeResult.error || null,
+          },
+        ],
+        leads: limited,
+      });
+    } catch (error) {
+      const message = error && error.message ? error.message : "Unknown scrape error.";
+      return res.status(500).json({ error: message });
+    }
   }
-});
+);
 
 function sanitizeText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -411,20 +307,6 @@ function parseSourceOptions(rawValue) {
     toPositiveInt(raw.googleMapsMaxCrawledPlacesPerSearch) ||
     toPositiveInt(raw.googleMapsMaxCrawledPlaces);
   const googleMapsLanguage = sanitizeText(raw.googleMapsLanguage);
-  const facebookStartUrls = Array.from(new Set(parseUrlArray(raw.facebookStartUrls)));
-  const facebookResultsLimit =
-    toPositiveInt(raw.facebookResultsLimit) ||
-    toPositiveInt(raw.facebookMaxItems) ||
-    toPositiveInt(raw.maxItems);
-  const facebookCaptionText = parseBoolean(raw.facebookCaptionText, false);
-  const facebookOnlyPostsNewerThan = sanitizeText(raw.facebookOnlyPostsNewerThan);
-  const facebookOnlyPostsOlderThan = sanitizeText(raw.facebookOnlyPostsOlderThan);
-  const facebookKeywords = Array.from(
-    new Set(
-      parseStringArray(raw.facebookKeywords)
-        .filter(Boolean)
-    )
-  );
 
   return {
     googleMapsSearchTerms,
@@ -432,43 +314,22 @@ function parseSourceOptions(rawValue) {
     googleMapsLocationQuery,
     googleMapsMaxCrawledPlacesPerSearch,
     googleMapsLanguage,
-    facebookStartUrls,
-    facebookResultsLimit,
-    facebookCaptionText,
-    facebookOnlyPostsNewerThan,
-    facebookOnlyPostsOlderThan,
-    facebookKeywords,
   };
 }
 
-function validateSourceInput({ source, companyType, serviceNeed, location, sourceOptions }) {
-  if (source === "google_maps") {
-    const hasTopic = Boolean(
-      sourceOptions.googleMapsSearchTerms.length > 0 ||
-        sourceOptions.googleMapsSearchString ||
-        serviceNeed ||
-        companyType
-    );
-    const effectiveLocation = sourceOptions.googleMapsLocationQuery || location;
-    if (!effectiveLocation) {
-      return "Google Maps needs a location or location query.";
-    }
-    if (!hasTopic) {
-      return "Google Maps needs at least one search term, company type, service need, or search string.";
-    }
+function validateSourceInput({ companyType, serviceNeed, location, sourceOptions }) {
+  const hasTopic = Boolean(
+    sourceOptions.googleMapsSearchTerms.length > 0 ||
+      sourceOptions.googleMapsSearchString ||
+      serviceNeed ||
+      companyType
+  );
+  const effectiveLocation = sourceOptions.googleMapsLocationQuery || location;
+  if (!effectiveLocation) {
+    return "Google Maps needs a location or location query.";
   }
-
-  if (source === "facebook") {
-    const hasFacebookUrls =
-      Array.isArray(sourceOptions.facebookStartUrls) &&
-      sourceOptions.facebookStartUrls.length > 0;
-    const hasFallbackKeywords =
-      Array.isArray(sourceOptions.facebookKeywords) &&
-      sourceOptions.facebookKeywords.length > 0;
-
-    if (!hasFacebookUrls && !hasFallbackKeywords) {
-      return "Facebook needs at least one public page or profile URL.";
-    }
+  if (!hasTopic) {
+    return "Google Maps needs at least one search term, company type, service need, or search string.";
   }
 
   return "";
@@ -493,23 +354,6 @@ function parseStringArray(value) {
   }
 
   return [];
-}
-
-function parseUrlArray(value) {
-  return parseStringArray(value)
-    .map((item) => normalizeUrl(item))
-    .filter(Boolean);
-}
-
-function normalizeUrl(value) {
-  const text = sanitizeText(value);
-  if (!text) {
-    return "";
-  }
-  if (/^https?:\/\//i.test(text)) {
-    return text;
-  }
-  return `https://${text}`;
 }
 
 function normalizeTimeWindow(rawValue) {
@@ -541,26 +385,6 @@ function resolveTimeContext(timeWindow) {
     sinceSec: Math.floor(sinceMs / 1000),
     sinceDateIso: new Date(sinceMs).toISOString(),
   };
-}
-
-function parseRequestedSources(rawSources) {
-  if (!Array.isArray(rawSources)) {
-    return [];
-  }
-
-  const filtered = rawSources.filter((key) => SOURCE_KEYS.includes(key));
-  return Array.from(new Set(filtered));
-}
-
-function distributeTargets(total, sources) {
-  const result = Object.fromEntries(sources.map((source) => [source, 0]));
-
-  for (let index = 0; index < total; index += 1) {
-    const source = sources[index % sources.length];
-    result[source] += 1;
-  }
-
-  return result;
 }
 
 async function scrapeSource({
@@ -632,7 +456,6 @@ async function scrapeSource({
           fallbackLocation: location,
           serviceNeed,
           searchTopic,
-          timeContext,
         })
       )
       .filter(Boolean);
@@ -696,30 +519,6 @@ function buildDefaultActorInput(source, params) {
     return input;
   }
 
-  if (source === "facebook") {
-    const input = {
-      startUrls: buildFacebookStartUrls({
-        facebookStartUrls: options.facebookStartUrls,
-        facebookKeywords: options.facebookKeywords,
-        location,
-      }),
-      resultsLimit: options.facebookResultsLimit || limit,
-      captionText: Boolean(options.facebookCaptionText),
-    };
-
-    if (options.facebookOnlyPostsNewerThan) {
-      input.onlyPostsNewerThan = options.facebookOnlyPostsNewerThan;
-    } else if (params.sinceDateIso) {
-      input.onlyPostsNewerThan = params.sinceDateIso;
-    }
-
-    if (options.facebookOnlyPostsOlderThan) {
-      input.onlyPostsOlderThan = options.facebookOnlyPostsOlderThan;
-    }
-
-    return input;
-  }
-
   return {
     query,
     maxItems: limit,
@@ -768,84 +567,7 @@ function ensureSourceRequiredFields(source, input, params) {
     }
   }
 
-  if (source === "facebook") {
-    input.startUrls = normalizeStartUrls(input.startUrls);
-    const hasStartUrls = Array.isArray(input.startUrls) && input.startUrls.length > 0;
-    if (!hasStartUrls) {
-      input.startUrls = buildFacebookStartUrls({
-        facebookStartUrls:
-          params.sourceOptions && Array.isArray(params.sourceOptions.facebookStartUrls)
-            ? params.sourceOptions.facebookStartUrls
-            : [],
-        facebookKeywords:
-          params.sourceOptions && Array.isArray(params.sourceOptions.facebookKeywords)
-            ? params.sourceOptions.facebookKeywords
-            : [],
-        location: params.location,
-      });
-    }
-
-    if (!input.resultsLimit) {
-      input.resultsLimit = input.maxItems || params.limit;
-    }
-
-    if (!Object.prototype.hasOwnProperty.call(input, "captionText")) {
-      input.captionText = Boolean(
-        params.sourceOptions && params.sourceOptions.facebookCaptionText
-      );
-    }
-
-    if (!input.onlyPostsNewerThan) {
-      if (params.sourceOptions && params.sourceOptions.facebookOnlyPostsNewerThan) {
-        input.onlyPostsNewerThan = params.sourceOptions.facebookOnlyPostsNewerThan;
-      } else if (params.sinceDateIso) {
-        input.onlyPostsNewerThan = params.sinceDateIso;
-      }
-    }
-
-    if (!input.onlyPostsOlderThan && params.sourceOptions && params.sourceOptions.facebookOnlyPostsOlderThan) {
-      input.onlyPostsOlderThan = params.sourceOptions.facebookOnlyPostsOlderThan;
-    }
-  }
-
   return input;
-}
-
-function buildFacebookStartUrls({ facebookStartUrls, facebookKeywords, location }) {
-  const directUrls = Array.isArray(facebookStartUrls) ? facebookStartUrls : [];
-  if (directUrls.length > 0) {
-    return directUrls.map((url) => ({ url }));
-  }
-
-  const keywords = Array.isArray(facebookKeywords) ? facebookKeywords : [];
-  return keywords
-    .map((keyword) => [keyword, location].filter(Boolean).join(" ").trim())
-    .filter(Boolean)
-    .map((searchQuery) => ({
-      url: `https://www.facebook.com/search/posts/?q=${encodeURIComponent(searchQuery)}`,
-    }));
-}
-
-function normalizeStartUrls(startUrls) {
-  if (!Array.isArray(startUrls)) {
-    return [];
-  }
-
-  return startUrls
-    .map((entry) => {
-      if (typeof entry === "string") {
-        const normalizedUrl = normalizeUrl(entry);
-        return normalizedUrl ? { url: normalizedUrl } : null;
-      }
-
-      if (entry && typeof entry === "object") {
-        const normalizedUrl = normalizeUrl(entry.url);
-        return normalizedUrl ? { ...entry, url: normalizedUrl } : null;
-      }
-
-      return null;
-    })
-    .filter(Boolean);
 }
 
 function buildRunOptions(source) {
@@ -921,60 +643,22 @@ function applyTemplate(value, params) {
 
 function normalizeLead(
   item,
-  { source, fallbackType, fallbackLocation, serviceNeed, searchTopic, timeContext }
+  { source, fallbackType, fallbackLocation, serviceNeed, searchTopic }
 ) {
-  const userObject = item.user && typeof item.user === "object" ? item.user : {};
-  const ownerObject = item.owner && typeof item.owner === "object" ? item.owner : {};
-  const authorObject = item.author && typeof item.author === "object" ? item.author : {};
   const companyName = pickText(
     item.name,
     item.title,
     item.businessName,
     item.companyName,
-    item.pageName,
-    item.communityName,
     item.displayName
   );
   const personName = pickText(
-    item.authorName,
-    item.authorFullName,
-    item.user,
-    item.posterName,
-    item.profileName,
-    item.ownerName,
-    item.userDisplayName,
-    item.pageName,
-    userObject.name,
-    userObject.fullName,
-    ownerObject.name,
-    ownerObject.fullName,
-    authorObject.name,
-    authorObject.fullName
+    item.contactName,
+    item.ownerName
   );
-  const username = formatUsername(
-    pickText(
-      item.username,
-      item.userName,
-      item.authorUsername,
-      item.handle,
-      item.ownerUsername,
-      userObject.username,
-      userObject.userName,
-      ownerObject.username,
-      ownerObject.userName,
-      authorObject.username,
-      authorObject.userName,
-      typeof item.author === "string" ? item.author : ""
-    )
-  );
+  const username = "";
   const content = pickContent(item);
   const createdAt = normalizeDate(pickCreatedAt(item));
-
-  if (timeContext.sinceMs && isSocialSource(source)) {
-    if (!createdAt || createdAt.epochMs < timeContext.sinceMs) {
-      return null;
-    }
-  }
 
   const leadName = companyName || personName || username || pickText(item.subject);
   if (!leadName && !content) {
@@ -1004,35 +688,29 @@ function normalizeLead(
   const address = pickAddress(item, fallbackLocation);
   const website = pickText(
     item.website,
-    item.url,
-    item.link,
-    item.pageUrl,
-    item.googleMapsUrl,
-    item.profileUrl
+    item.websiteUrl,
+    item.webSite,
+    item.site,
+    item.businessWebsite
   );
+  const needsWebsite = !website;
   const sourceUrl = normalizeSourceUrl(
     pickText(
-      item.postUrl,
-      item.permalink,
+      item.googleMapsUrl,
+      item.mapsUrl,
+      item.placeUrl,
       item.url,
       item.link,
-      item.pageUrl,
-      item.facebookUrl,
       item.topLevelUrl,
-      item.googleMapsUrl,
       item.inputUrl,
-      item.profileUrl,
       item.website
-    ),
-    source
+    )
   );
-  const postUrl = sourceUrl;
   const sentiment = analyzeSentiment(content);
   const intent = analyzeIntent({
     content,
     serviceNeed,
     searchTopic,
-    source,
   });
   const impliedNeedContent =
     extractNeedEvidence(content, intent.matchedPhrases, intent.matchedServiceTokens) || "N/A";
@@ -1046,9 +724,9 @@ function normalizeLead(
     address: address || "N/A",
     source,
     website: website || "N/A",
+    needsWebsite,
     sourceUrl: sourceUrl || "N/A",
-    postUrl: postUrl || "N/A",
-    postContent: content || "N/A",
+    content: content || "N/A",
     impliedNeedContent,
     createdAt: createdAt ? createdAt.iso : "N/A",
     sentimentLabel: sentiment.label,
@@ -1103,13 +781,7 @@ function pickAddress(item, fallbackLocation) {
 function pickContent(item) {
   const details = item.details || item.meta || {};
   return pickText(
-    item.text,
-    item.body,
-    item.selfText,
-    item.caption,
     item.description,
-    item.message,
-    item.postText,
     item.content,
     item.excerpt,
     item.snippet,
@@ -1124,12 +796,9 @@ function pickCreatedAt(item) {
     item.created_at,
     item.createdUtc,
     item.created_utc,
-    item.publishedAt,
-    item.postedAt,
     item.timestamp,
     item.time,
     item.date,
-    item.published_time,
     item.insertedAt,
     item.updatedAt
   );
@@ -1208,7 +877,7 @@ function normalizePhone(value) {
   return digitsOnly;
 }
 
-function normalizeSourceUrl(value, source) {
+function normalizeSourceUrl(value) {
   const text = sanitizeText(value);
   if (!text) {
     return "";
@@ -1230,20 +899,6 @@ function normalizeSourceUrl(value, source) {
   } catch (error) {
     return "";
   }
-}
-
-function formatUsername(value) {
-  if (!value) {
-    return "";
-  }
-  const cleaned = String(value).trim().replace(/^@+/, "");
-  if (!cleaned) {
-    return "";
-  }
-  if (/^[a-z0-9_.-]+$/i.test(cleaned)) {
-    return `@${cleaned}`;
-  }
-  return cleaned;
 }
 
 function analyzeSentiment(text) {
@@ -1279,7 +934,7 @@ function analyzeSentiment(text) {
   return { label, score };
 }
 
-function analyzeIntent({ content, serviceNeed, searchTopic, source }) {
+function analyzeIntent({ content, serviceNeed, searchTopic }) {
   if (!content) {
     return { score: 0, matchedPhrases: [], matchedServiceTokens: [] };
   }
@@ -1323,9 +978,7 @@ function analyzeIntent({ content, serviceNeed, searchTopic, source }) {
     }
   }
 
-  if (!isSocialSource(source)) {
-    score = Math.min(score, 40);
-  }
+  score = Math.min(score, 40);
 
   return {
     score: Math.min(score, 100),
@@ -1395,10 +1048,6 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function isSocialSource(source) {
-  return source === "facebook";
-}
-
 function scoreLead(lead) {
   let score = 0;
 
@@ -1411,7 +1060,7 @@ function scoreLead(lead) {
   if (lead.username && lead.username !== "N/A") {
     score += 10;
   }
-  if (lead.postContent && lead.postContent !== "N/A") {
+  if (lead.content && lead.content !== "N/A") {
     score += 10;
   }
   if (lead.impliedNeedContent && lead.impliedNeedContent !== "N/A") {
@@ -1426,16 +1075,15 @@ function scoreLead(lead) {
   if (lead.type && lead.type !== "Unknown") {
     score += 6;
   }
-  if (lead.website && lead.website !== "N/A") {
-    score += 5;
+  if (lead.needsWebsite) {
+    score += 25;
+  } else if (lead.website && lead.website !== "N/A") {
+    score += 0;
   }
   if (lead.sentimentLabel === "negative") {
     score += 8;
   } else if (lead.sentimentLabel === "neutral") {
     score += 4;
-  }
-  if (isSocialSource(lead.source)) {
-    score += 7;
   }
   score += Math.round((lead.intentScore || 0) * 0.2);
 
@@ -1443,10 +1091,7 @@ function scoreLead(lead) {
 }
 
 function isQualifiedLead(lead, score) {
-  if (isSocialSource(lead.source)) {
-    return score >= SCORE_THRESHOLD && (lead.intentScore || 0) >= 45;
-  }
-  return score >= SCORE_THRESHOLD;
+  return lead.needsWebsite && score >= SCORE_THRESHOLD;
 }
 
 function dedupeLeads(leads) {
@@ -1503,138 +1148,15 @@ function stripInternalFields(lead) {
     qualified: lead.qualified,
     qualificationScore: lead.qualificationScore,
     website: lead.website,
+    needsWebsite: lead.needsWebsite,
     sourceUrl: lead.sourceUrl,
-    postUrl: lead.postUrl,
-    postContent: lead.postContent,
+    content: lead.content,
     impliedNeedContent: lead.impliedNeedContent,
     createdAt: lead.createdAt,
     sentimentLabel: lead.sentimentLabel,
     sentimentScore: lead.sentimentScore,
     intentScore: lead.intentScore,
   };
-}
-
-async function runWithConcurrency(taskFactories, concurrency) {
-  const safeConcurrency = Math.max(1, Math.min(concurrency, taskFactories.length));
-  const results = new Array(taskFactories.length);
-  let cursor = 0;
-
-  async function worker() {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= taskFactories.length) {
-        return;
-      }
-      results[index] = await taskFactories[index]();
-    }
-  }
-
-  const workers = Array.from({ length: safeConcurrency }, () => worker());
-  await Promise.all(workers);
-  return results;
-}
-
-function hasConfiguredAdminAccess() {
-  return Boolean(ADMIN_PASSWORD);
-}
-
-function isValidAdminLogin(username, password) {
-  return secureCompare(username, ADMIN_USERNAME) && secureCompare(password, ADMIN_PASSWORD);
-}
-
-function secureCompare(left, right) {
-  const leftBuffer = Buffer.from(String(left));
-  const rightBuffer = Buffer.from(String(right));
-
-  if (leftBuffer.length !== rightBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
-}
-
-function createSession({ username }) {
-  clearExpiredSessions();
-
-  const sessionId = crypto.randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + SESSION_TTL_MS;
-
-  sessionStore.set(sessionId, {
-    username,
-    expiresAt,
-  });
-
-  return sessionId;
-}
-
-function clearExpiredSessions() {
-  const now = Date.now();
-
-  for (const [sessionId, session] of sessionStore.entries()) {
-    if (!session || session.expiresAt <= now) {
-      sessionStore.delete(sessionId);
-    }
-  }
-}
-
-function getSessionIdFromRequest(req) {
-  const cookies = parseCookies(req.headers.cookie || "");
-  return cookies[SESSION_COOKIE_NAME] || "";
-}
-
-function getSessionFromRequest(req) {
-  if (!hasConfiguredAdminAccess()) {
-    return null;
-  }
-
-  clearExpiredSessions();
-  const sessionId = getSessionIdFromRequest(req);
-  if (!sessionId) {
-    return null;
-  }
-
-  const session = sessionStore.get(sessionId);
-  if (!session || session.expiresAt <= Date.now()) {
-    sessionStore.delete(sessionId);
-    return null;
-  }
-
-  return session;
-}
-
-function parseCookies(rawCookieHeader) {
-  return String(rawCookieHeader || "")
-    .split(";")
-    .map((pair) => pair.trim())
-    .filter(Boolean)
-    .reduce((cookies, pair) => {
-      const separatorIndex = pair.indexOf("=");
-      if (separatorIndex < 1) {
-        return cookies;
-      }
-
-      const key = pair.slice(0, separatorIndex).trim();
-      const value = pair.slice(separatorIndex + 1).trim();
-      cookies[key] = decodeURIComponent(value);
-      return cookies;
-    }, {});
-}
-
-function requireAuth(req, res, next) {
-  if (!hasConfiguredAdminAccess()) {
-    return res.status(503).json({
-      error: "Authentication is not configured. Set APP_ADMIN_PASSWORD on the server.",
-    });
-  }
-
-  const session = getSessionFromRequest(req);
-  if (!session) {
-    return res.status(401).json({ error: "Authentication required." });
-  }
-
-  req.auth = session;
-  return next();
 }
 
 function createRateLimitMiddleware(namespace, maxRequests, windowMs) {
@@ -1685,34 +1207,6 @@ function extractClientIp(req) {
   }
 
   return req.ip || req.socket.remoteAddress || "unknown";
-}
-
-function setSessionCookie(res, sessionId, req) {
-  res.cookie(SESSION_COOKIE_NAME, sessionId, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: isSecureRequest(req),
-    maxAge: SESSION_TTL_MS,
-    path: "/",
-  });
-}
-
-function clearSessionCookie(res, req) {
-  res.clearCookie(SESSION_COOKIE_NAME, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: isSecureRequest(req),
-    path: "/",
-  });
-}
-
-function isSecureRequest(req) {
-  if (req.secure) {
-    return true;
-  }
-
-  const forwardedProto = req.headers["x-forwarded-proto"];
-  return typeof forwardedProto === "string" && forwardedProto.toLowerCase() === "https";
 }
 
 app.listen(PORT, () => {

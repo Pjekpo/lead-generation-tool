@@ -7,19 +7,11 @@ services:
     autoDeployTrigger: commit
     healthCheckPath: /api/health
     envVars:
-      - key: APP_ADMIN_USERNAME
-        value: admin
-      - key: APP_ADMIN_PASSWORD
-        sync: false
       - key: APIFY_TOKEN
         sync: false
       - key: APIFY_ACTOR_GOOGLE_MAPS
         sync: false
-      - key: APIFY_ACTOR_FACEBOOK
-        sync: false
       - key: APIFY_DEFAULT_MEMORY_MBYTES
         value: "1024"
-      - key: APIFY_SOURCE_CONCURRENCY
-        value: "1"
       - key: LEAD_QUALIFICATION_THRESHOLD
         value: "65"

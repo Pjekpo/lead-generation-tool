@@ -1,118 +1,50 @@
-const ALLOWED_SOURCES = ["google_maps", "facebook"];
-const SOURCE_LABELS = {
-  google_maps: "Google Maps",
-  facebook: "Facebook",
-};
-
-const authPanel = document.getElementById("authPanel");
-const loginForm = document.getElementById("loginForm");
-const loginUsernameInput = document.getElementById("loginUsername");
-const loginPasswordInput = document.getElementById("loginPassword");
-const loginStatusEl = document.getElementById("loginStatus");
-const loginBtn = document.getElementById("loginBtn");
-const authStatePill = document.getElementById("authStatePill");
-const logoutBtn = document.getElementById("logoutBtn");
+const SOURCE_LABEL = "Google Maps";
 
 const form = document.getElementById("leadForm");
 const statusEl = document.getElementById("status");
 const resultsBody = document.getElementById("resultsBody");
 const submitBtn = document.getElementById("submitBtn");
+const searchTermRows = document.getElementById("searchTermRows");
+const addSearchTermBtn = document.getElementById("addSearchTermBtn");
+const bulkEditBtn = document.getElementById("bulkEditBtn");
+const removeEmptyBtn = document.getElementById("removeEmptyBtn");
+const locationInput = document.getElementById("location");
+const placesPerSearchInput = document.getElementById("placesPerSearch");
 
-const companyTypeInput = document.getElementById("companyType");
-const useCompanyTypeToggle = document.getElementById("useCompanyType");
-
-const sourceGate = document.getElementById("sourceGate");
-const appSections = document.getElementById("appSections");
-const openSourcePickerBtn = document.getElementById("openSourcePickerBtn");
-const selectedSourceLabel = document.getElementById("selectedSourceLabel");
-const changeSourceBtn = document.getElementById("changeSourceBtn");
-const sourceModal = document.getElementById("sourceModal");
-const closeSourceModalBtn = document.getElementById("closeSourceModalBtn");
-const sourceChoiceButtons = document.querySelectorAll(".source-choice");
-
-const sourceOptionsFieldset = document.getElementById("sourceOptionsFieldset");
-const googleMapsOptions = document.getElementById("googleMapsOptions");
-const facebookOptions = document.getElementById("facebookOptions");
-
-let selectedSource = "";
-let authConfigured = false;
-let authenticated = false;
-let authenticatedUsername = "";
-
-useCompanyTypeToggle.addEventListener("change", syncCompanyTypeToggle);
-openSourcePickerBtn.addEventListener("click", openSourceModal);
-changeSourceBtn.addEventListener("click", openSourceModal);
-closeSourceModalBtn.addEventListener("click", closeSourceModal);
-loginForm.addEventListener("submit", handleLoginSubmit);
-logoutBtn.addEventListener("click", handleLogoutClick);
-
-sourceModal.addEventListener("click", (event) => {
-  if (event.target === sourceModal) {
-    closeSourceModal();
-  }
+addSearchTermBtn.addEventListener("click", () => {
+  addSearchTermRow("");
 });
 
-for (const button of sourceChoiceButtons) {
-  button.addEventListener("click", () => {
-    const source = button.getAttribute("data-source");
-    if (!source) {
-      return;
-    }
-    setSelectedSource(source);
-  });
-}
+bulkEditBtn.addEventListener("click", () => {
+  const existingTerms = getSearchTermValues({ includeEmpty: true }).join("\n");
+  const updatedTerms = window.prompt("Enter one search term per line.", existingTerms);
+  if (updatedTerms === null) {
+    return;
+  }
+
+  setSearchTermRows(
+    updatedTerms
+      .split(/\r?\n/)
+      .map((term) => term.trim())
+  );
+});
+
+removeEmptyBtn.addEventListener("click", () => {
+  const terms = getSearchTermValues({ includeEmpty: false });
+  setSearchTermRows(terms.length > 0 ? terms : [""]);
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  if (!authenticated) {
-    setStatus("Sign in before generating leads.", true);
-    updateWorkspaceVisibility();
-    loginPasswordInput.focus();
-    return;
-  }
+  const searchTerms = getSearchTermValues({ includeEmpty: false });
+  const location = locationInput.value.trim();
+  const placesPerSearch = toPositiveInt(placesPerSearchInput.value);
+  const leadCount = searchTerms.length * placesPerSearch;
 
-  if (!selectedSource) {
-    setStatus("Choose a source first.", true);
-    openSourceModal();
-    return;
-  }
-
-  const useCompanyType = useCompanyTypeToggle.checked;
-  const companyType = useCompanyType ? companyTypeInput.value.trim() : "";
-  const serviceNeed = document.getElementById("serviceNeed").value.trim();
-  const location = document.getElementById("location").value.trim();
-  const timeWindow = document.getElementById("timeWindow").value;
-  const sourceOptions = {
-    googleMapsSearchTerms: parseList(document.getElementById("googleMapsSearchTerms").value),
-    googleMapsLocationQuery: document.getElementById("googleMapsLocationQuery").value.trim(),
-    googleMapsMaxCrawledPlacesPerSearch: toPositiveInt(
-      document.getElementById("googleMapsMaxCrawledPlacesPerSearch").value
-    ),
-    googleMapsLanguage: document.getElementById("googleMapsLanguage").value.trim() || "en",
-    facebookStartUrls: parseUrlList(document.getElementById("facebookStartUrls").value),
-    facebookResultsLimit: toPositiveInt(document.getElementById("facebookResultsLimit").value),
-    facebookCaptionText: document.getElementById("facebookCaptionText").checked,
-    facebookOnlyPostsNewerThan: document.getElementById("facebookOnlyPostsNewerThan").value.trim(),
-    facebookOnlyPostsOlderThan: document.getElementById("facebookOnlyPostsOlderThan").value.trim(),
-  };
-  const leadCount = Number(document.getElementById("leadCount").value);
-  const sources = [selectedSource];
-
-  if (!Number.isInteger(leadCount) || leadCount < 1) {
-    setStatus("Please provide a valid lead count.", true);
-    return;
-  }
-
-  const sourceInputError = validateSourceInputs({
-    selectedSource,
-    companyType,
-    serviceNeed,
-    location,
-    sourceOptions,
-  });
-  if (sourceInputError) {
-    setStatus(sourceInputError, true);
+  const inputError = validateInputs({ searchTerms, location, placesPerSearch, leadCount });
+  if (inputError) {
+    setStatus(inputError, true);
     return;
   }
 
@@ -124,22 +56,19 @@ form.addEventListener("submit", async (event) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        companyType,
-        useCompanyType,
-        serviceNeed,
         location,
-        timeWindow,
-        sourceOptions,
         leadCount,
-        sources,
+        sourceOptions: {
+          googleMapsSearchTerms: searchTerms,
+          googleMapsLocationQuery: location,
+          googleMapsMaxCrawledPlacesPerSearch: placesPerSearch,
+          googleMapsLanguage: "en",
+        },
       }),
     });
 
     const payload = await parseJsonResponse(response);
     if (!response.ok) {
-      if (response.status === 401 || response.status === 503) {
-        await refreshAuthState();
-      }
       throw new Error(payload.error || "Request failed.");
     }
 
@@ -149,12 +78,10 @@ form.addEventListener("submit", async (event) => {
     const warningText = (meta.warnings || []).length
       ? ` Warnings: ${(meta.warnings || []).join(" | ")}`
       : "";
-    const timeText = meta.timeWindowLabel ? ` Time: ${meta.timeWindowLabel}.` : "";
-    const sourceText = ` Source: ${SOURCE_LABELS[selectedSource]}.`;
     setStatus(
       `Returned ${meta.returnedLeads || 0}/${meta.requestedLeads || leadCount} leads. Qualified: ${
         meta.qualifiedLeads || 0
-      }.${timeText}${sourceText}${warningText}`
+      }. Source: ${SOURCE_LABEL}.${warningText}`
     );
   } catch (error) {
     setStatus(error.message || "Unable to generate leads.", true);
@@ -164,213 +91,108 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-syncCompanyTypeToggle();
-syncSourceOptionVisibility();
-updateWorkspaceVisibility();
-void refreshAuthState();
+addSearchTermRow("restaurant");
 
-function setSelectedSource(source) {
-  if (!authenticated || !ALLOWED_SOURCES.includes(source)) {
-    return;
-  }
+function addSearchTermRow(value) {
+  const row = document.createElement("div");
+  row.className = "search-term-row";
 
-  selectedSource = source;
-  selectedSourceLabel.textContent = `Source: ${SOURCE_LABELS[source] || source}`;
-  updateWorkspaceVisibility();
-  syncSourceOptionVisibility();
-  closeSourceModal();
-}
+  const rowNumber = document.createElement("span");
+  rowNumber.className = "search-term-number";
 
-function syncSourceOptionVisibility() {
-  const showGoogleMaps = selectedSource === "google_maps";
-  const showFacebook = selectedSource === "facebook";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value;
+  input.placeholder = "restaurant";
+  input.className = "search-term-input";
+  input.addEventListener("input", updateSearchTermState);
 
-  googleMapsOptions.classList.toggle("hidden", !showGoogleMaps);
-  facebookOptions.classList.toggle("hidden", !showFacebook);
-
-  const showFieldset = showGoogleMaps || showFacebook;
-  sourceOptionsFieldset.classList.toggle("hidden", !showFieldset);
-}
-
-function updateWorkspaceVisibility() {
-  const showAuthenticatedWorkspace = authenticated && authConfigured;
-
-  authPanel.classList.toggle("hidden", showAuthenticatedWorkspace);
-  sourceGate.classList.toggle("hidden", !(showAuthenticatedWorkspace && !selectedSource));
-  appSections.classList.toggle("hidden", !(showAuthenticatedWorkspace && Boolean(selectedSource)));
-
-  if (!showAuthenticatedWorkspace) {
-    closeSourceModal();
-  }
-}
-
-async function refreshAuthState() {
-  try {
-    const response = await fetch("/api/auth/status", {
-      method: "GET",
-      headers: { Accept: "application/json" },
-    });
-    const payload = await parseJsonResponse(response);
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Unable to check authentication status.");
-    }
-
-    authConfigured = Boolean(payload.configured);
-    authenticated = Boolean(payload.authenticated);
-    authenticatedUsername = payload.username || "";
-
-    authStatePill.textContent = authenticatedUsername
-      ? `Signed in as ${authenticatedUsername}`
-      : "Signed in";
-    authStatePill.classList.toggle("hidden", !authenticated);
-    logoutBtn.classList.toggle("hidden", !authenticated);
-
-    if (!authConfigured) {
-      setLoginStatus("Set APP_ADMIN_PASSWORD on the server before using the app.", true);
-      setLoginLoading(false);
-    } else if (authenticated) {
-      setLoginStatus("Signed in.", false);
-      setStatus("Choose a source to start.");
-      loginPasswordInput.value = "";
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "remove-term-btn";
+  removeButton.setAttribute("aria-label", "Remove search term");
+  removeButton.textContent = "x";
+  removeButton.addEventListener("click", () => {
+    if (searchTermRows.children.length === 1) {
+      input.value = "";
     } else {
-      setLoginStatus("Sign in to unlock the app.", false);
-      setStatus("Waiting for request.");
+      row.remove();
     }
+    updateSearchTermState();
+  });
 
-    if (!authenticated) {
-      selectedSource = "";
-      selectedSourceLabel.textContent = "Source: Not selected";
-      renderLeads([]);
-    }
-
-    syncSourceOptionVisibility();
-    updateWorkspaceVisibility();
-  } catch (error) {
-    authConfigured = false;
-    authenticated = false;
-    authenticatedUsername = "";
-    authStatePill.classList.add("hidden");
-    logoutBtn.classList.add("hidden");
-    selectedSource = "";
-    selectedSourceLabel.textContent = "Source: Not selected";
-    updateWorkspaceVisibility();
-    setLoginLoading(false);
-    setLoginStatus(error.message || "Unable to check authentication status.", true);
-  }
+  row.append(rowNumber, input, removeButton);
+  searchTermRows.append(row);
+  input.focus();
+  updateSearchTermState();
 }
 
-async function handleLoginSubmit(event) {
-  event.preventDefault();
-
-  if (!authConfigured && loginStatusEl.textContent.includes("APP_ADMIN_PASSWORD")) {
-    return;
+function setSearchTermRows(values) {
+  searchTermRows.innerHTML = "";
+  const safeValues = values.length > 0 ? values : [""];
+  for (const value of safeValues) {
+    addSearchTermRow(value);
   }
-
-  const username = loginUsernameInput.value.trim();
-  const password = loginPasswordInput.value;
-
-  if (!username || !password) {
-    setLoginStatus("Enter your username and password.", true);
-    return;
-  }
-
-  setLoginLoading(true);
-  setLoginStatus("Signing in...");
-
-  try {
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    const payload = await parseJsonResponse(response);
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Sign-in failed.");
-    }
-
-    await refreshAuthState();
-  } catch (error) {
-    authenticated = false;
-    updateWorkspaceVisibility();
-    setLoginStatus(error.message || "Sign-in failed.", true);
-  } finally {
-    setLoginLoading(false);
-  }
+  updateSearchTermState();
 }
 
-async function handleLogoutClick() {
-  logoutBtn.disabled = true;
+function updateSearchTermState() {
+  const rows = Array.from(searchTermRows.querySelectorAll(".search-term-row"));
+  rows.forEach((row, index) => {
+    const rowNumber = row.querySelector(".search-term-number");
+    rowNumber.textContent = String(index + 1);
+  });
 
-  try {
-    const response = await fetch("/api/auth/logout", {
-      method: "POST",
-      headers: { Accept: "application/json" },
-    });
-    const payload = await parseJsonResponse(response);
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Logout failed.");
-    }
-  } catch (error) {
-    setLoginStatus(error.message || "Logout failed.", true);
-  } finally {
-    selectedSource = "";
-    selectedSourceLabel.textContent = "Source: Not selected";
-    authenticated = false;
-    authenticatedUsername = "";
-    await refreshAuthState();
-    logoutBtn.disabled = false;
-  }
+  const hasEmptyRows = getSearchTermValues({ includeEmpty: true }).some((term) => !term);
+  removeEmptyBtn.disabled = !hasEmptyRows;
 }
 
-function openSourceModal() {
-  if (!authenticated) {
-    return;
-  }
-  sourceModal.classList.remove("hidden");
+function getSearchTermValues({ includeEmpty }) {
+  const inputs = Array.from(searchTermRows.querySelectorAll(".search-term-input"));
+  return inputs
+    .map((input) => input.value.trim())
+    .filter((term) => includeEmpty || Boolean(term));
 }
 
-function closeSourceModal() {
-  sourceModal.classList.add("hidden");
+function validateInputs({ searchTerms, location, placesPerSearch, leadCount }) {
+  if (searchTerms.length === 0) {
+    return "Add at least one search term.";
+  }
+  if (!location) {
+    return "Location is required.";
+  }
+  if (!Number.isInteger(placesPerSearch) || placesPerSearch < 1) {
+    return "Number of places must be at least 1.";
+  }
+  if (leadCount > 500) {
+    return "Total requested places cannot exceed 500.";
+  }
+  return "";
 }
 
 function renderLeads(leads) {
   if (!Array.isArray(leads) || leads.length === 0) {
-    resultsBody.innerHTML = '<tr><td colspan="12" class="placeholder">No leads found for this request.</td></tr>';
+    resultsBody.innerHTML = '<tr><td colspan="9" class="placeholder">No leads found for this request.</td></tr>';
     return;
   }
 
   const rows = leads
     .map((lead) => {
-      const qualified = lead.qualified
-        ? `Yes (${lead.qualificationScore || 0})`
-        : `No (${lead.qualificationScore || 0})`;
-      const personParts = [lead.personName, lead.username].filter(
-        (value) => value && value !== "N/A"
-      );
-      const personValue = personParts.length ? personParts.join(" / ") : "N/A";
-      const sentiment = lead.sentimentLabel
-        ? `${capitalize(lead.sentimentLabel)} (${lead.sentimentScore || 0})`
-        : "N/A";
-      const sourceUrlCell = renderSourceLink(lead.sourceUrl || lead.postUrl);
-      const sourceLabel = SOURCE_LABELS[lead.source] || lead.source || "N/A";
+      const websiteCell = renderSourceLink(lead.website);
+      const sourceUrlCell = renderSourceLink(lead.sourceUrl);
+      const needsWebsite = Boolean(lead.needsWebsite);
 
       return `
-        <tr>
+        <tr class="${needsWebsite ? "needs-website-row" : ""}">
           <td>${escapeHtml(lead.companyName || "N/A")}</td>
-          <td>${escapeHtml(personValue)}</td>
           <td>${escapeHtml(lead.phoneNumber || "N/A")}</td>
           <td>${escapeHtml(lead.type || "N/A")}</td>
           <td>${escapeHtml(lead.address || "N/A")}</td>
-          <td>${escapeHtml(sourceLabel)}</td>
+          <td>${needsWebsite ? '<span class="flag-badge">Needs website</span>' : "No"}</td>
+          <td class="url-cell">${needsWebsite ? '<span class="missing-website">No website found</span>' : websiteCell}</td>
           <td class="url-cell">${sourceUrlCell}</td>
-          <td>${escapeHtml(formatDate(lead.createdAt))}</td>
-          <td>${escapeHtml(sentiment)}</td>
-          <td>${escapeHtml(String(lead.intentScore || 0))}</td>
-          <td class="content-cell">${escapeHtml(lead.impliedNeedContent || lead.postContent || "N/A")}</td>
-          <td>${qualified}</td>
+          <td>${escapeHtml(String(lead.qualificationScore || 0))}</td>
+          <td>${lead.qualified ? "Yes" : "No"}</td>
         </tr>
       `;
     })
@@ -384,57 +206,9 @@ function setStatus(message, isError = false) {
   statusEl.className = isError ? "status error" : "status";
 }
 
-function setLoginStatus(message, isError = false) {
-  loginStatusEl.textContent = message;
-  loginStatusEl.className = isError ? "status error" : "status";
-}
-
 function setLoading(isLoading) {
   submitBtn.disabled = isLoading;
   submitBtn.textContent = isLoading ? "Working..." : "Generate Leads";
-}
-
-function setLoginLoading(isLoading) {
-  loginBtn.disabled = isLoading || !authConfigured;
-  loginBtn.textContent = isLoading ? "Signing In..." : "Sign In";
-}
-
-function validateSourceInputs({ selectedSource, companyType, serviceNeed, location, sourceOptions }) {
-  if (selectedSource === "google_maps") {
-    const hasGoogleMapsSearchTerms =
-      Array.isArray(sourceOptions.googleMapsSearchTerms) &&
-      sourceOptions.googleMapsSearchTerms.length > 0;
-    const effectiveLocation = sourceOptions.googleMapsLocationQuery || location;
-
-    if (!effectiveLocation) {
-      return "Google Maps needs a location or location query.";
-    }
-    if (!companyType && !serviceNeed && !hasGoogleMapsSearchTerms) {
-      return "Google Maps needs at least one search term, company type, or service need.";
-    }
-  }
-
-  if (selectedSource === "facebook") {
-    if (!Array.isArray(sourceOptions.facebookStartUrls) || sourceOptions.facebookStartUrls.length === 0) {
-      return "Facebook needs at least one public page or profile URL.";
-    }
-  }
-
-  return "";
-}
-
-function parseList(value) {
-  const items = String(value || "")
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return Array.from(new Set(items));
-}
-
-function parseUrlList(value) {
-  return parseList(value)
-    .map((item) => normalizeUrl(item))
-    .filter(Boolean);
 }
 
 function toPositiveInt(value) {
@@ -485,48 +259,6 @@ function truncate(value, maxLength) {
     return text;
   }
   return `${text.slice(0, maxLength - 3)}...`;
-}
-
-function normalizeUrl(rawUrl) {
-  const text = String(rawUrl || "").trim();
-  if (!text) {
-    return "";
-  }
-
-  if (/^https?:\/\//i.test(text)) {
-    return text;
-  }
-
-  return `https://${text}`;
-}
-
-function syncCompanyTypeToggle() {
-  const enabled = useCompanyTypeToggle.checked;
-  companyTypeInput.disabled = !enabled;
-  companyTypeInput.placeholder = enabled
-    ? "e.g. Roofing contractor"
-    : "Company type disabled";
-}
-
-function formatDate(rawDate) {
-  if (!rawDate || rawDate === "N/A") {
-    return "N/A";
-  }
-
-  const date = new Date(rawDate);
-  if (Number.isNaN(date.getTime())) {
-    return rawDate;
-  }
-
-  return date.toLocaleString();
-}
-
-function capitalize(value) {
-  const text = String(value || "");
-  if (!text) {
-    return "";
-  }
-  return `${text[0].toUpperCase()}${text.slice(1)}`;
 }
 
 function escapeHtml(value) {

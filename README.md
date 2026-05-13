@@ -1,30 +1,24 @@
 # Lead Generation Tool
 
-Web app for scraping and qualifying business leads from Google Maps and Facebook via Apify actors.
+Web app for scraping and qualifying business leads from Google Maps via an Apify actor.
 
 ## Features
 
-- Web form input:
-  - Company type (optional toggle on/off)
-  - Service need / buyer intent text
+- Google Maps form inputs:
+  - Search terms
   - Location
-  - Time filter (last week, 2 months, etc.)
-  - Number of leads
-- Source selection
-- Source-specific options:
-  - Google Maps search terms + location query + max places + language
-  - Facebook page/profile URLs + results limit + transcript + date filters
-- Backend orchestration of Apify actors per source
-- Lead normalization to a common format:
+  - Number of places to extract per search term
+- Backend orchestration of the configured Google Maps Apify actor
+- Lead normalization:
   - Company name
-  - Person name / username
   - Phone number
-  - Type
+  - Type/category
   - Address
-- AI-style sentiment + intent scoring from post content
-- Evidence snippet extraction (content that implies service need)
+  - Website
+  - Needs website flag
+  - Google Maps URL
 - Basic lead qualification scoring
-- Deduplication across sources
+- Deduplication
 - Results table in browser
 
 ## Stack
@@ -42,12 +36,12 @@ npm install
 ```
 
 2. Create `.env` from `.env.example` and set:
-   - `APIFY_TOKEN`
-   - `APIFY_ACTOR_GOOGLE_MAPS`
-   - `APIFY_ACTOR_FACEBOOK`
-   - `APP_ADMIN_PASSWORD`
-   - `APIFY_DEFAULT_MEMORY_MBYTES` (start with `1024`)
-   - `APIFY_SOURCE_CONCURRENCY` (set to `1` to avoid memory spikes)
+
+- `APIFY_TOKEN`
+- `APIFY_ACTOR_GOOGLE_MAPS`
+- `APIFY_DEFAULT_MEMORY_MBYTES` (start with `1024`)
+
+The server also loads `.env.local` as a local override. Keep both `.env` and `.env.local` out of version control.
 
 3. Start the server:
 
@@ -61,14 +55,13 @@ npm start
 http://localhost:3000
 ```
 
-## Actor input customization
+## Actor Input Customization
 
-Different actors expect different input schemas. If your actor input does not match defaults in `server.js`, set these in `.env`:
+Different Google Maps actors expect different input schemas. If your actor input does not match defaults in `server.js`, set this in `.env`:
 
 - `APIFY_INPUT_TEMPLATE_GOOGLE_MAPS`
-- `APIFY_INPUT_TEMPLATE_FACEBOOK`
 
-Each template must be valid JSON and supports:
+The template must be valid JSON and supports:
 
 - `{{companyType}}`
 - `{{serviceNeed}}`
@@ -90,66 +83,50 @@ Example:
 APIFY_INPUT_TEMPLATE_GOOGLE_MAPS={"searchString":"{{searchTopic}} in {{location}}","maxCrawledPlaces":"{{limit}}"}
 ```
 
-For Facebook actors that require `startUrls`, the app auto-builds search URLs from your Facebook keywords.
+Default Google Maps mapping:
 
-Default source mappings in this app:
+- `searchStringsArray`
+- `locationQuery`
+- `maxCrawledPlacesPerSearch`
+- `language`
 
-- Google Maps: uses `searchStringsArray`, `locationQuery`, `maxCrawledPlacesPerSearch`, and `language`
-- Facebook: uses `startUrls`, `resultsLimit`, `captionText`, `onlyPostsNewerThan`, and `onlyPostsOlderThan`
+## Required Inputs
 
-## Required inputs by source
+Google Maps needs:
 
-- Google Maps:
-  - Location or Google Maps location query
-  - One of: company type, service need, or Google Maps search terms
-- Facebook:
-  - At least one public Facebook page/profile URL
+- At least one search term
+- One location
+- Number of places to extract per search term
 
-## Access control
-
-This app is designed to be safe for a public GitHub repo, but it should not be exposed without authentication.
+## Runtime Notes
 
 - Secrets stay on the server in `.env`
-- The browser only talks to your own `/api/*` routes
-- Protected API routes require a login session
-- Login attempts and API usage are rate-limited in memory
-
-Minimum production setup:
-
-- Set `APP_ADMIN_PASSWORD`
 - Keep `.env` out of version control
-- Deploy the Node server, not a static-only export
+- The browser only talks to your own `/api/*` routes
+- API usage is rate-limited in memory
 
 ## Deploy
 
-This repo includes a Render blueprint in [render.yaml](c:/Users/prais/Documents/Ekpo%20AI%20Projects/Lead%20Generation%20tool/render.yaml).
+This repo includes a Render blueprint in [render.yaml](render.yaml).
 
 On Render:
 
 1. Create a new Blueprint service from this GitHub repo
 2. Set the required secret env vars:
-   - `APP_ADMIN_PASSWORD`
    - `APIFY_TOKEN`
    - `APIFY_ACTOR_GOOGLE_MAPS`
-   - `APIFY_ACTOR_FACEBOOK`
 3. Deploy
 
-## Memory tuning (fix for memory-limit warnings)
+## Memory Tuning
 
-If Apify shows a memory-limit warning (for example requested `4096MB`), lower memory in `.env`:
+If Apify shows a memory-limit warning, lower memory in `.env`:
 
 ```env
 APIFY_DEFAULT_MEMORY_MBYTES=1024
 APIFY_MEMORY_MBYTES_GOOGLE_MAPS=1024
-APIFY_SOURCE_CONCURRENCY=1
 ```
 
-You can also set per-source values:
-
-- `APIFY_MEMORY_MBYTES_GOOGLE_MAPS`
-- `APIFY_MEMORY_MBYTES_FACEBOOK`
-
-## Qualification logic
+## Qualification Logic
 
 Each lead gets a score (0-100) based on data completeness:
 
@@ -157,19 +134,19 @@ Each lead gets a score (0-100) based on data completeness:
 - Phone present
 - Address present
 - Type present
-- Website present
+- Missing website
 
-Qualified leads are those with score >= `LEAD_QUALIFICATION_THRESHOLD`.
+Qualified leads are companies with no website found and score >= `LEAD_QUALIFICATION_THRESHOLD`.
 
-## Compliance note
+## Compliance Note
 
-Scraping social platforms may be restricted by platform terms, account permissions, and local privacy laws. Use approved methods, valid credentials, and compliant actors.
+Google Maps scraping may be restricted by platform terms, account permissions, and local privacy laws. Use approved methods, valid credentials, and compliant actors.
 
-## Suggested alternatives
+## Suggested Alternatives
 
 In addition to Apify, you can combine:
 
-- Google Places API (stable for business listings)
+- Google Places API
 - Bright Data datasets/APIs
-- SerpApi (Google Maps extraction via API)
-- Clay + enrichment APIs (Clearbit, Apollo, Hunter) for qualification
+- SerpApi Google Maps extraction
+- Clay + enrichment APIs for qualification
