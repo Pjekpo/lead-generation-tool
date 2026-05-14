@@ -1,3 +1,4 @@
+const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const { ApifyClient } = require("apify-client");
@@ -16,6 +17,8 @@ const API_RATE_LIMIT_MAX = toPositiveInt(process.env.APP_API_MAX_REQUESTS) || 30
 const API_RATE_LIMIT_WINDOW_MS =
   (toPositiveInt(process.env.APP_API_WINDOW_MINUTES) || 15) * 60 * 1000;
 const rateLimitStore = new Map();
+const LAST_RUN_SNAPSHOT_PATH = path.join(__dirname, ".last-run-results.json");
+const LAST_RUN_EXPORT_PATH = path.join(__dirname, "last-run-results.csv");
 
 const TIME_WINDOWS = {
   any: { label: "Any time", ms: 0 },
@@ -154,6 +157,28 @@ app.get("/api/sources", (req, res) => {
   res.json({ sources });
 });
 
+app.get("/api/leads/last", (req, res) => {
+  const snapshot = readLatestRunSnapshot();
+  if (!snapshot) {
+    return res.status(404).json({ error: "No saved run results found yet." });
+  }
+
+  return res.json(snapshot);
+});
+
+app.get("/api/leads/last.csv", (req, res) => {
+  const snapshot = readLatestRunSnapshot();
+  if (!snapshot) {
+    return res.status(404).json({ error: "No saved run results found yet." });
+  }
+
+  const csv = buildLeadsCsv(snapshot.leads || []);
+  const stamp = new Date(snapshot.savedAt || Date.now()).toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="lead-results-${stamp}.csv"`);
+  return res.send(csv);
+});
+
 app.post(
   "/api/leads",
   createRateLimitMiddleware("api", API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS),
@@ -230,7 +255,7 @@ app.post(
       const qualifiedCount = limited.filter((lead) => lead.qualified).length;
       const warnings = scrapeResult.error ? [`Google Maps: ${scrapeResult.error}`] : [];
 
-      return res.json({
+      const payload = {
         meta: {
           companyType,
           useCompanyType,
@@ -265,7 +290,11 @@ app.post(
           },
         ],
         leads: limited,
-      });
+      };
+
+      saveLatestRunSnapshot(payload);
+
+      return res.json(payload);
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown scrape error.";
       return res.status(500).json({ error: message });
@@ -1157,6 +1186,183 @@ function stripInternalFields(lead) {
     sentimentScore: lead.sentimentScore,
     intentScore: lead.intentScore,
   };
+}
+
+function saveLatestRunSnapshot(payload) {
+  const snapshot = {
+    savedAt: new Date().toISOString(),
+    meta: payload.meta || {},
+    sourceResults: payload.sourceResults || [],
+    leads: Array.isArray(payload.leads) ? payload.leads : [],
+  };
+
+  try {
+    fs.writeFileSync(LAST_RUN_SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2), "utf8");
+  } catch (error) {
+    console.error(`Unable to save latest run results: ${error.message}`);
+  }
+}
+
+function readLatestRunSnapshot() {
+  try {
+    if (fs.existsSync(LAST_RUN_SNAPSHOT_PATH)) {
+      const snapshot = JSON.parse(fs.readFileSync(LAST_RUN_SNAPSHOT_PATH, "utf8"));
+      if (snapshot && Array.isArray(snapshot.leads)) {
+        return snapshot;
+      }
+    }
+  } catch (error) {
+    console.error(`Unable to read latest run results: ${error.message}`);
+  }
+
+  return readLegacyCsvSnapshot();
+}
+
+function readLegacyCsvSnapshot() {
+  try {
+    if (!fs.existsSync(LAST_RUN_EXPORT_PATH)) {
+      return null;
+    }
+
+    const rows = parseCsv(fs.readFileSync(LAST_RUN_EXPORT_PATH, "utf8"));
+    if (rows.length < 2) {
+      return null;
+    }
+
+    const headers = rows[0];
+    const leads = rows.slice(1).map((row) => csvRowToLead(headers, row)).filter(Boolean);
+    if (leads.length === 0) {
+      return null;
+    }
+
+    return {
+      savedAt: fs.statSync(LAST_RUN_EXPORT_PATH).mtime.toISOString(),
+      meta: {
+        returnedLeads: leads.length,
+        requestedLeads: leads.length,
+        qualifiedLeads: leads.filter((lead) => lead.qualified).length,
+        selectedSource: GOOGLE_MAPS_SOURCE,
+        warnings: [],
+      },
+      sourceResults: [],
+      leads,
+    };
+  } catch (error) {
+    console.error(`Unable to read last-run CSV fallback: ${error.message}`);
+    return null;
+  }
+}
+
+function csvRowToLead(headers, row) {
+  const record = {};
+  headers.forEach((header, index) => {
+    record[header] = row[index] || "";
+  });
+
+  const companyName = record.Name || record["Company Name"] || "";
+  if (!companyName) {
+    return null;
+  }
+
+  const website = record.Website || "";
+  const needsWebsite = !website;
+
+  return {
+    companyName,
+    personName: "N/A",
+    username: "N/A",
+    phoneNumber: record.Phone || record["Phone Number"] || "N/A",
+    type: record.Category || record.Type || "Unknown",
+    address: record.Address || "N/A",
+    source: GOOGLE_MAPS_SOURCE,
+    qualified: false,
+    qualificationScore: Number(record["Qualification Score"]) || 0,
+    website: website || "N/A",
+    needsWebsite,
+    sourceUrl: record.Maps || record["Google Maps URL"] || "N/A",
+    content: "N/A",
+    impliedNeedContent: "N/A",
+    createdAt: "N/A",
+    sentimentLabel: "unknown",
+    sentimentScore: 0,
+    intentScore: 0,
+  };
+}
+
+function buildLeadsCsv(leads) {
+  const headers = [
+    "#",
+    "Company Name",
+    "Phone Number",
+    "Type",
+    "Address",
+    "Needs Website",
+    "Website",
+    "Google Maps URL",
+  ];
+
+  const rows = leads.map((lead, index) => [
+    index + 1,
+    lead.companyName || "",
+    lead.phoneNumber || "",
+    lead.type || "",
+    lead.address || "",
+    lead.needsWebsite ? "Yes" : "No",
+    lead.website === "N/A" ? "" : lead.website || "",
+    lead.sourceUrl === "N/A" ? "" : lead.sourceUrl || "",
+  ]);
+
+  return [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
+}
+
+function csvEscape(value) {
+  const text = String(value === undefined || value === null ? "" : value).replace(/\r?\n/g, " ");
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let insideQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (insideQuotes) {
+      if (char === '"' && next === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') {
+        insideQuotes = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      insideQuotes = true;
+    } else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else if (char !== "\r") {
+      cell += char;
+    }
+  }
+
+  if (cell || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+
+  return rows;
 }
 
 function createRateLimitMiddleware(namespace, maxRequests, windowMs) {

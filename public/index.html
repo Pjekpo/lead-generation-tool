@@ -57,11 +57,16 @@
               <h2>Results</h2>
               <p id="status" class="status">Waiting for request.</p>
             </div>
+            <div class="results-actions">
+              <button id="printLastRunBtn" type="button" class="secondary-btn compact-btn">Print Last Results</button>
+              <button id="exportCsvBtn" type="button" class="secondary-btn compact-btn">Export CSV</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table id="resultsTable">
               <thead>
                 <tr>
+                  <th>#</th>
                   <th>Company Name</th>
                   <th>Phone Number</th>
                   <th>Type</th>
@@ -69,13 +74,11 @@
                   <th>Needs Website</th>
                   <th>Website</th>
                   <th>Google Maps URL</th>
-                  <th>Qualification Score</th>
-                  <th>Qualified</th>
                 </tr>
               </thead>
               <tbody id="resultsBody">
                 <tr>
-                  <td colspan="9" class="placeholder">No leads yet.</td>
+                  <td colspan="8" class="placeholder">No leads yet.</td>
                 </tr>
               </tbody>
             </table>

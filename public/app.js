@@ -8,6 +8,8 @@ const searchTermRows = document.getElementById("searchTermRows");
 const addSearchTermBtn = document.getElementById("addSearchTermBtn");
 const bulkEditBtn = document.getElementById("bulkEditBtn");
 const removeEmptyBtn = document.getElementById("removeEmptyBtn");
+const printLastRunBtn = document.getElementById("printLastRunBtn");
+const exportCsvBtn = document.getElementById("exportCsvBtn");
 const locationInput = document.getElementById("location");
 const placesPerSearchInput = document.getElementById("placesPerSearch");
 
@@ -33,6 +35,9 @@ removeEmptyBtn.addEventListener("click", () => {
   const terms = getSearchTermValues({ includeEmpty: false });
   setSearchTermRows(terms.length > 0 ? terms : [""]);
 });
+
+printLastRunBtn.addEventListener("click", printLastResults);
+exportCsvBtn.addEventListener("click", exportLastResultsCsv);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -92,6 +97,59 @@ form.addEventListener("submit", async (event) => {
 });
 
 addSearchTermRow("restaurant");
+
+async function printLastResults() {
+  setUtilityLoading(true);
+  setStatus("Loading saved results...");
+
+  try {
+    const response = await fetch("/api/leads/last");
+    const payload = await parseJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(payload.error || "Unable to load saved results.");
+    }
+
+    const leads = payload.leads || [];
+    renderLeads(leads);
+    const meta = payload.meta || {};
+    const savedAt = payload.savedAt ? ` Saved: ${formatDateTime(payload.savedAt)}.` : "";
+    setStatus(
+      `Printed ${leads.length} saved leads. Qualified: ${meta.qualifiedLeads || 0}.${savedAt}`
+    );
+  } catch (error) {
+    setStatus(error.message || "Unable to load saved results.", true);
+  } finally {
+    setUtilityLoading(false);
+  }
+}
+
+async function exportLastResultsCsv() {
+  setUtilityLoading(true);
+  setStatus("Preparing CSV export...");
+
+  try {
+    const response = await fetch("/api/leads/last.csv");
+    if (!response.ok) {
+      const payload = await parseJsonResponse(response);
+      throw new Error(payload.error || "Unable to export saved results.");
+    }
+
+    const blob = await response.blob();
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = getDownloadFilename(response.headers.get("Content-Disposition"));
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(downloadUrl);
+    setStatus("CSV export ready.");
+  } catch (error) {
+    setStatus(error.message || "Unable to export saved results.", true);
+  } finally {
+    setUtilityLoading(false);
+  }
+}
 
 function addSearchTermRow(value) {
   const row = document.createElement("div");
@@ -172,18 +230,19 @@ function validateInputs({ searchTerms, location, placesPerSearch, leadCount }) {
 
 function renderLeads(leads) {
   if (!Array.isArray(leads) || leads.length === 0) {
-    resultsBody.innerHTML = '<tr><td colspan="9" class="placeholder">No leads found for this request.</td></tr>';
+    resultsBody.innerHTML = '<tr><td colspan="8" class="placeholder">No leads found for this request.</td></tr>';
     return;
   }
 
   const rows = leads
-    .map((lead) => {
+    .map((lead, index) => {
       const websiteCell = renderSourceLink(lead.website);
       const sourceUrlCell = renderSourceLink(lead.sourceUrl);
       const needsWebsite = Boolean(lead.needsWebsite);
 
       return `
         <tr class="${needsWebsite ? "needs-website-row" : ""}">
+          <td class="number-cell">${index + 1}</td>
           <td>${escapeHtml(lead.companyName || "N/A")}</td>
           <td>${escapeHtml(lead.phoneNumber || "N/A")}</td>
           <td>${escapeHtml(lead.type || "N/A")}</td>
@@ -191,8 +250,6 @@ function renderLeads(leads) {
           <td>${needsWebsite ? '<span class="flag-badge">Needs website</span>' : "No"}</td>
           <td class="url-cell">${needsWebsite ? '<span class="missing-website">No website found</span>' : websiteCell}</td>
           <td class="url-cell">${sourceUrlCell}</td>
-          <td>${escapeHtml(String(lead.qualificationScore || 0))}</td>
-          <td>${lead.qualified ? "Yes" : "No"}</td>
         </tr>
       `;
     })
@@ -209,6 +266,13 @@ function setStatus(message, isError = false) {
 function setLoading(isLoading) {
   submitBtn.disabled = isLoading;
   submitBtn.textContent = isLoading ? "Working..." : "Generate Leads";
+  printLastRunBtn.disabled = isLoading;
+  exportCsvBtn.disabled = isLoading;
+}
+
+function setUtilityLoading(isLoading) {
+  printLastRunBtn.disabled = isLoading;
+  exportCsvBtn.disabled = isLoading;
 }
 
 function toPositiveInt(value) {
@@ -259,6 +323,21 @@ function truncate(value, maxLength) {
     return text;
   }
   return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function getDownloadFilename(disposition) {
+  const fallback = "lead-results.csv";
+  const match = String(disposition || "").match(/filename="?([^"]+)"?/i);
+  return match && match[1] ? match[1] : fallback;
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
 }
 
 function escapeHtml(value) {
