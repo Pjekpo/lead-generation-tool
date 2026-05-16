@@ -9,6 +9,7 @@ Web app for scraping and qualifying business leads from Google Maps via an Apify
   - Location
   - Number of places to extract per search term
 - Backend orchestration of the configured Google Maps Apify actor
+- Filters out leads with no phone number or a proper standalone website
 - Lead normalization:
   - Company name
   - Phone number
@@ -16,8 +17,8 @@ Web app for scraping and qualifying business leads from Google Maps via an Apify
   - Address
   - Website
   - Needs website flag
+  - Website status/reason for social, hosted, or directory URLs
   - Google Maps URL
-- Basic lead qualification scoring
 - Deduplication
 - Results table in browser
 
@@ -40,6 +41,8 @@ npm install
 - `APIFY_TOKEN`
 - `APIFY_ACTOR_GOOGLE_MAPS`
 - `APIFY_DEFAULT_MEMORY_MBYTES` (start with `1024`)
+- `WEBSITE_REDIRECT_CHECK_ENABLED` (optional, defaults to `true`)
+- `WEBSITE_REDIRECT_CHECK_TIMEOUT_MS` (optional, defaults to `4000`)
 
 The server also loads `.env.local` as a local override. Keep both `.env` and `.env.local` out of version control.
 
@@ -126,18 +129,6 @@ APIFY_DEFAULT_MEMORY_MBYTES=1024
 APIFY_MEMORY_MBYTES_GOOGLE_MAPS=1024
 ```
 
-## Qualification Logic
-
-Each lead gets a score (0-100) based on data completeness:
-
-- Name present
-- Phone present
-- Address present
-- Type present
-- Missing website
-
-Qualified leads are companies with no website found and score >= `LEAD_QUALIFICATION_THRESHOLD`.
-
 ## Compliance Note
 
 Google Maps scraping may be restricted by platform terms, account permissions, and local privacy laws. Use approved methods, valid credentials, and compliant actors.
@@ -149,4 +140,4 @@ In addition to Apify, you can combine:
 - Google Places API
 - Bright Data datasets/APIs
 - SerpApi Google Maps extraction
-- Clay + enrichment APIs for qualification
+- Clay + enrichment APIs

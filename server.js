@@ -10,7 +10,6 @@ app.disable("x-powered-by");
 
 const PORT = Number(process.env.PORT || 3000);
 const MAX_LEADS = 500;
-const SCORE_THRESHOLD = Number(process.env.LEAD_QUALIFICATION_THRESHOLD || 65);
 const DEFAULT_WAIT_SECS = toPositiveInt(process.env.APIFY_WAIT_SECS) || 180;
 const DEFAULT_MEMORY_MBYTES = toPositiveInt(process.env.APIFY_DEFAULT_MEMORY_MBYTES) || 1024;
 const API_RATE_LIMIT_MAX = toPositiveInt(process.env.APP_API_MAX_REQUESTS) || 30;
@@ -19,6 +18,54 @@ const API_RATE_LIMIT_WINDOW_MS =
 const rateLimitStore = new Map();
 const LAST_RUN_SNAPSHOT_PATH = path.join(__dirname, ".last-run-results.json");
 const LAST_RUN_EXPORT_PATH = path.join(__dirname, "last-run-results.csv");
+const WEBSITE_REDIRECT_CHECK_ENABLED = parseBoolean(process.env.WEBSITE_REDIRECT_CHECK_ENABLED, true);
+const WEBSITE_REDIRECT_CHECK_TIMEOUT_MS =
+  toPositiveInt(process.env.WEBSITE_REDIRECT_CHECK_TIMEOUT_MS) || 4000;
+const WEBSITE_REDIRECT_CHECK_CONCURRENCY =
+  toPositiveInt(process.env.WEBSITE_REDIRECT_CHECK_CONCURRENCY) || 8;
+
+const THIRD_PARTY_WEBSITE_PLATFORMS = [
+  { label: "Facebook", kind: "social", domains: ["facebook.com", "fb.com", "fb.me"] },
+  { label: "Instagram", kind: "social", domains: ["instagram.com"] },
+  { label: "X/Twitter", kind: "social", domains: ["x.com", "twitter.com"] },
+  { label: "TikTok", kind: "social", domains: ["tiktok.com"] },
+  { label: "LinkedIn", kind: "social", domains: ["linkedin.com"] },
+  { label: "YouTube", kind: "social", domains: ["youtube.com", "youtu.be"] },
+  { label: "Pinterest", kind: "social", domains: ["pinterest.com"] },
+  { label: "Threads", kind: "social", domains: ["threads.net"] },
+  { label: "Snapchat", kind: "social", domains: ["snapchat.com"] },
+  { label: "WhatsApp", kind: "social", domains: ["wa.me", "whatsapp.com"] },
+  { label: "Telegram", kind: "social", domains: ["t.me", "telegram.me", "telegram.org"] },
+  { label: "Reddit", kind: "social", domains: ["reddit.com"] },
+  { label: "Linktree", kind: "directory", domains: ["linktr.ee"] },
+  { label: "Bio Site", kind: "directory", domains: ["bio.site"] },
+  { label: "Beacons", kind: "directory", domains: ["beacons.ai"] },
+  { label: "Carrd", kind: "hosted", domains: ["carrd.co"] },
+  { label: "Google Business Profile", kind: "directory", domains: ["business.site", "g.page"] },
+  { label: "Google Sites", kind: "hosted", domains: ["sites.google.com"] },
+  { label: "Google Maps", kind: "directory", domains: ["maps.app.goo.gl"] },
+  { label: "Wix hosted site", kind: "hosted", domains: ["wixsite.com"] },
+  { label: "Weebly hosted site", kind: "hosted", domains: ["weebly.com"] },
+  { label: "WordPress.com hosted site", kind: "hosted", domains: ["wordpress.com"] },
+  { label: "GoDaddy hosted site", kind: "hosted", domains: ["godaddysites.com"] },
+  { label: "Webnode hosted site", kind: "hosted", domains: ["webnode.page", "webnode.com"] },
+  { label: "Square hosted site", kind: "hosted", domains: ["square.site"] },
+  { label: "Shopify hosted site", kind: "hosted", domains: ["myshopify.com"] },
+  { label: "Yelp", kind: "directory", domains: ["yelp.com"] },
+  { label: "Tripadvisor", kind: "directory", domains: ["tripadvisor.com", "tripadvisor.co.uk"] },
+  { label: "Foursquare", kind: "directory", domains: ["foursquare.com"] },
+  { label: "Yell", kind: "directory", domains: ["yell.com"] },
+  { label: "Checkatrade", kind: "directory", domains: ["checkatrade.com"] },
+  { label: "Trustpilot", kind: "directory", domains: ["trustpilot.com"] },
+  { label: "Bark", kind: "directory", domains: ["bark.com"] },
+  { label: "Houzz", kind: "directory", domains: ["houzz.com", "houzz.co.uk"] },
+  { label: "Nextdoor", kind: "directory", domains: ["nextdoor.com", "nextdoor.co.uk"] },
+  { label: "Fresha", kind: "directory", domains: ["fresha.com"] },
+  { label: "Booksy", kind: "directory", domains: ["booksy.com"] },
+  { label: "Treatwell", kind: "directory", domains: ["treatwell.co.uk"] },
+  { label: "Setmore", kind: "directory", domains: ["setmore.com"] },
+  { label: "Calendly", kind: "directory", domains: ["calendly.com"] },
+];
 
 const TIME_WINDOWS = {
   any: { label: "Any time", ms: 0 },
@@ -244,15 +291,12 @@ app.post(
         sourceOptions,
       });
 
-      const merged = dedupeLeads(scrapeResult.leads);
+      const websiteCheckedLeads = await verifyLeadWebsiteRedirects(scrapeResult.leads);
+      const merged = dedupeLeads(websiteCheckedLeads).filter(shouldIncludeLead);
       const ranked = merged.sort((a, b) => {
-        if (b.qualificationScore !== a.qualificationScore) {
-          return b.qualificationScore - a.qualificationScore;
-        }
-        return b.intentScore - a.intentScore;
+        return (b.intentScore || 0) - (a.intentScore || 0);
       });
       const limited = ranked.slice(0, leadCount).map(stripInternalFields);
-      const qualifiedCount = limited.filter((lead) => lead.qualified).length;
       const warnings = scrapeResult.error ? [`Google Maps: ${scrapeResult.error}`] : [];
 
       const payload = {
@@ -267,7 +311,6 @@ app.post(
           sinceDate: timeContext.sinceDateIso || null,
           requestedLeads: leadCount,
           returnedLeads: limited.length,
-          qualifiedLeads: qualifiedCount,
           selectedSource: source,
           sourceOptions: {
             googleMapsSearchTerms: sourceOptions.googleMapsSearchTerms,
@@ -285,7 +328,7 @@ app.post(
             actorId: scrapeResult.actorId,
             target: scrapeResult.target,
             scraped: scrapeResult.scraped,
-            normalized: scrapeResult.leads.length,
+            normalized: websiteCheckedLeads.length,
             error: scrapeResult.error || null,
           },
         ],
@@ -704,6 +747,9 @@ function normalizeLead(
       item.contact && item.contact.phone
     )
   );
+  if (!phoneNumber) {
+    return null;
+  }
 
   const type = pickText(
     item.type,
@@ -722,7 +768,7 @@ function normalizeLead(
     item.site,
     item.businessWebsite
   );
-  const needsWebsite = !website;
+  const websiteAssessment = classifyWebsiteUrl(website);
   const sourceUrl = normalizeSourceUrl(
     pickText(
       item.googleMapsUrl,
@@ -753,7 +799,12 @@ function normalizeLead(
     address: address || "N/A",
     source,
     website: website || "N/A",
-    needsWebsite,
+    needsWebsite: !websiteAssessment.hasRealWebsite,
+    websiteStatus: websiteAssessment.websiteStatus,
+    websiteFoundUrl: websiteAssessment.websiteFoundUrl,
+    websiteCheckedUrl: websiteAssessment.websiteCheckedUrl,
+    websiteReason: websiteAssessment.websiteReason,
+    websiteNote: websiteAssessment.websiteNote,
     sourceUrl: sourceUrl || "N/A",
     content: content || "N/A",
     impliedNeedContent,
@@ -763,11 +814,8 @@ function normalizeLead(
     intentScore: intent.score,
   };
 
-  const score = scoreLead(lead);
   return {
     ...lead,
-    qualificationScore: score,
-    qualified: isQualifiedLead(lead, score),
     raw: item,
   };
 }
@@ -1077,52 +1125,6 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function scoreLead(lead) {
-  let score = 0;
-
-  if (lead.companyName && lead.companyName !== "N/A") {
-    score += 10;
-  }
-  if (lead.personName && lead.personName !== "N/A") {
-    score += 12;
-  }
-  if (lead.username && lead.username !== "N/A") {
-    score += 10;
-  }
-  if (lead.content && lead.content !== "N/A") {
-    score += 10;
-  }
-  if (lead.impliedNeedContent && lead.impliedNeedContent !== "N/A") {
-    score += 14;
-  }
-  if (lead.phoneNumber && lead.phoneNumber !== "N/A") {
-    score += 15;
-  }
-  if (lead.address && lead.address !== "N/A") {
-    score += 10;
-  }
-  if (lead.type && lead.type !== "Unknown") {
-    score += 6;
-  }
-  if (lead.needsWebsite) {
-    score += 25;
-  } else if (lead.website && lead.website !== "N/A") {
-    score += 0;
-  }
-  if (lead.sentimentLabel === "negative") {
-    score += 8;
-  } else if (lead.sentimentLabel === "neutral") {
-    score += 4;
-  }
-  score += Math.round((lead.intentScore || 0) * 0.2);
-
-  return Math.min(score, 100);
-}
-
-function isQualifiedLead(lead, score) {
-  return lead.needsWebsite && score >= SCORE_THRESHOLD;
-}
-
 function dedupeLeads(leads) {
   const map = new Map();
 
@@ -1130,7 +1132,7 @@ function dedupeLeads(leads) {
     const key = dedupeKey(lead);
     const existing = map.get(key);
 
-    if (!existing || lead.qualificationScore > existing.qualificationScore) {
+    if (!existing || (lead.intentScore || 0) > (existing.intentScore || 0)) {
       map.set(key, lead);
     }
   }
@@ -1154,6 +1156,302 @@ function normalizeToken(value) {
   return String(value).toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function hasPhoneNumber(lead) {
+  return Boolean(lead && normalizeToken(lead.phoneNumber));
+}
+
+function shouldIncludeLead(lead) {
+  return hasPhoneNumber(lead) && Boolean(lead && lead.needsWebsite);
+}
+
+function classifyWebsiteUrl(rawUrl, options = {}) {
+  const foundUrl = sanitizeText(rawUrl);
+  if (!foundUrl || foundUrl === "N/A") {
+    return {
+      hasRealWebsite: false,
+      websiteStatus: "No website found",
+      websiteFoundUrl: "N/A",
+      websiteCheckedUrl: "N/A",
+      websiteReason: "No website URL was listed for this lead.",
+      websiteNote: "No independent business website was found.",
+    };
+  }
+
+  const checkedUrl = normalizeSourceUrl(options.checkedUrl || foundUrl);
+  if (!checkedUrl) {
+    return {
+      hasRealWebsite: false,
+      websiteStatus: "Not a real website",
+      websiteFoundUrl: foundUrl,
+      websiteCheckedUrl: foundUrl,
+      websiteReason: "The website field is not a valid public website URL.",
+      websiteNote: "Website URL could not be verified as an independent business website.",
+    };
+  }
+
+  const platform = identifyThirdPartyWebsite(checkedUrl);
+  if (platform) {
+    const redirected = Boolean(options.redirected);
+    const action = redirected
+      ? `redirects to ${platform.label} at ${checkedUrl}`
+      : `is hosted on ${platform.label}`;
+    return {
+      hasRealWebsite: false,
+      websiteStatus: "Not a real website",
+      websiteFoundUrl: foundUrl,
+      websiteCheckedUrl: checkedUrl,
+      websiteReason: `The listed website ${action}.`,
+      websiteNote: buildThirdPartyWebsiteNote(platform),
+    };
+  }
+
+  const host = getWebsiteHost(checkedUrl);
+  const redirected = Boolean(options.redirected);
+  return {
+    hasRealWebsite: true,
+    websiteStatus: "Proper website",
+    websiteFoundUrl: foundUrl,
+    websiteCheckedUrl: checkedUrl,
+    websiteReason: redirected
+      ? `The listed website redirects to an independent domain (${host}).`
+      : `The listed website uses an independent domain (${host}).`,
+    websiteNote: "Website appears to be an independent business website.",
+  };
+}
+
+function identifyThirdPartyWebsite(url) {
+  const host = getWebsiteHost(url);
+  const pathname = getWebsitePathname(url);
+  if (!host) {
+    return null;
+  }
+
+  if (isGoogleListingHost(host, pathname)) {
+    return { label: "Google Maps", kind: "directory" };
+  }
+
+  return THIRD_PARTY_WEBSITE_PLATFORMS.find((platform) =>
+    platform.domains.some((domain) => hostnameMatches(host, domain))
+  );
+}
+
+function isGoogleListingHost(host, pathname) {
+  const googleHost = host === "google.com" || /^google\.[a-z.]+$/i.test(host);
+  const googleSubdomain = /^([a-z-]+\.)?google\.[a-z.]+$/i.test(host);
+  if (host.startsWith("maps.google.") || host.startsWith("business.google.")) {
+    return true;
+  }
+
+  if (!googleHost && !googleSubdomain) {
+    return false;
+  }
+
+  return (
+    pathname.startsWith("/maps") ||
+    pathname.startsWith("/search") ||
+    pathname.startsWith("/local") ||
+    pathname.includes("/place/")
+  );
+}
+
+function hostnameMatches(host, domain) {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+function getWebsiteHost(url) {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch (error) {
+    return "";
+  }
+}
+
+function getWebsitePathname(url) {
+  try {
+    return new URL(url).pathname.toLowerCase();
+  } catch (error) {
+    return "";
+  }
+}
+
+function buildThirdPartyWebsiteNote(platform) {
+  if (platform.kind === "social") {
+    return `Website is only a ${platform.label} page, not an independent business website.`;
+  }
+
+  if (platform.kind === "hosted") {
+    return `Website is hosted on ${platform.label}, not an independent business website.`;
+  }
+
+  return `Website is only a ${platform.label} listing, not an independent business website.`;
+}
+
+function getExistingWebsiteAssessment(lead) {
+  const websiteStatus = sanitizeText(lead && lead.websiteStatus);
+  const websiteReason = sanitizeText(lead && lead.websiteReason);
+  const websiteNote = sanitizeText(lead && lead.websiteNote);
+
+  if (websiteStatus && websiteReason && websiteNote) {
+    return {
+      hasRealWebsite: websiteStatus === "Proper website",
+      websiteStatus,
+      websiteFoundUrl: sanitizeText(lead.websiteFoundUrl) || sanitizeText(lead.website) || "N/A",
+      websiteCheckedUrl:
+        sanitizeText(lead.websiteCheckedUrl) ||
+        normalizeSourceUrl(lead.websiteFoundUrl || lead.website) ||
+        "N/A",
+      websiteReason,
+      websiteNote,
+    };
+  }
+
+  return classifyWebsiteUrl(lead && lead.website);
+}
+
+function withWebsiteAssessment(lead, assessment = null) {
+  const websiteAssessment = assessment || getExistingWebsiteAssessment(lead);
+  const nextLead = {
+    ...lead,
+    needsWebsite: !websiteAssessment.hasRealWebsite,
+    websiteStatus: websiteAssessment.websiteStatus,
+    websiteFoundUrl: websiteAssessment.websiteFoundUrl,
+    websiteCheckedUrl: websiteAssessment.websiteCheckedUrl,
+    websiteReason: websiteAssessment.websiteReason,
+    websiteNote: websiteAssessment.websiteNote,
+  };
+  return nextLead;
+}
+
+async function verifyLeadWebsiteRedirects(leads) {
+  if (
+    !Array.isArray(leads) ||
+    leads.length === 0 ||
+    !WEBSITE_REDIRECT_CHECK_ENABLED ||
+    typeof fetch !== "function"
+  ) {
+    return Array.isArray(leads) ? leads.map((lead) => withWebsiteAssessment(lead)) : [];
+  }
+
+  return mapWithConcurrency(
+    leads,
+    WEBSITE_REDIRECT_CHECK_CONCURRENCY,
+    async (lead) => verifyLeadWebsiteRedirect(lead)
+  );
+}
+
+async function verifyLeadWebsiteRedirect(lead) {
+  const current = withWebsiteAssessment(lead);
+  if (current.websiteStatus !== "Proper website") {
+    return current;
+  }
+
+  const initialUrl = normalizeSourceUrl(current.websiteCheckedUrl || current.website);
+  if (!initialUrl) {
+    return current;
+  }
+
+  const resolvedUrl = await resolveWebsiteFinalUrl(initialUrl);
+  if (!resolvedUrl) {
+    return current;
+  }
+
+  const redirected = resolvedUrl !== initialUrl;
+  const assessment = classifyWebsiteUrl(current.websiteFoundUrl || current.website, {
+    checkedUrl: resolvedUrl,
+    redirected,
+  });
+  return withWebsiteAssessment(current, assessment);
+}
+
+async function resolveWebsiteFinalUrl(url) {
+  return (await fetchFinalWebsiteUrl(url, "HEAD")) || (await fetchFinalWebsiteUrl(url, "GET"));
+}
+
+async function fetchFinalWebsiteUrl(url, method) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), WEBSITE_REDIRECT_CHECK_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method,
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "user-agent": "Mozilla/5.0 LeadGenerationTool/1.0",
+      },
+    });
+    if (response.body && typeof response.body.cancel === "function") {
+      await response.body.cancel().catch(() => {});
+    }
+    if (method === "HEAD" && [403, 405, 501].includes(response.status)) {
+      return "";
+    }
+    return response.url || url;
+  } catch (error) {
+    return "";
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, iteratee) {
+  const list = Array.isArray(items) ? items : [];
+  const results = new Array(list.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, list.length));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < list.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await iteratee(list[index], index);
+      }
+    })
+  );
+
+  return results;
+}
+
+function withPreparedSnapshot(snapshot) {
+  const leads = Array.isArray(snapshot && snapshot.leads)
+    ? snapshot.leads
+        .filter(hasPhoneNumber)
+        .map((lead) => withWebsiteAssessment(lead))
+        .filter(shouldIncludeLead)
+    : [];
+  return {
+    ...(snapshot || {}),
+    meta: buildPreparedMeta(snapshot && snapshot.meta, leads),
+    leads,
+  };
+}
+
+function buildPreparedMeta(sourceMeta, leads) {
+  const meta = {};
+  [
+    "companyType",
+    "useCompanyType",
+    "serviceNeed",
+    "searchTopic",
+    "location",
+    "timeWindow",
+    "timeWindowLabel",
+    "sinceDate",
+    "requestedLeads",
+    "selectedSource",
+    "sourceOptions",
+    "warnings",
+  ].forEach((key) => {
+    if (sourceMeta && sourceMeta[key] !== undefined) {
+      meta[key] = sourceMeta[key];
+    }
+  });
+
+  meta.returnedLeads = leads.length;
+  return meta;
+}
+
 function toPositiveInt(value) {
   if (value === undefined || value === null || value === "") {
     return 0;
@@ -1174,10 +1472,13 @@ function stripInternalFields(lead) {
     type: lead.type,
     address: lead.address,
     source: lead.source,
-    qualified: lead.qualified,
-    qualificationScore: lead.qualificationScore,
     website: lead.website,
     needsWebsite: lead.needsWebsite,
+    websiteStatus: lead.websiteStatus,
+    websiteFoundUrl: lead.websiteFoundUrl,
+    websiteCheckedUrl: lead.websiteCheckedUrl,
+    websiteReason: lead.websiteReason,
+    websiteNote: lead.websiteNote,
     sourceUrl: lead.sourceUrl,
     content: lead.content,
     impliedNeedContent: lead.impliedNeedContent,
@@ -1189,12 +1490,12 @@ function stripInternalFields(lead) {
 }
 
 function saveLatestRunSnapshot(payload) {
-  const snapshot = {
+  const snapshot = withPreparedSnapshot({
     savedAt: new Date().toISOString(),
     meta: payload.meta || {},
     sourceResults: payload.sourceResults || [],
     leads: Array.isArray(payload.leads) ? payload.leads : [],
-  };
+  });
 
   try {
     fs.writeFileSync(LAST_RUN_SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2), "utf8");
@@ -1208,7 +1509,7 @@ function readLatestRunSnapshot() {
     if (fs.existsSync(LAST_RUN_SNAPSHOT_PATH)) {
       const snapshot = JSON.parse(fs.readFileSync(LAST_RUN_SNAPSHOT_PATH, "utf8"));
       if (snapshot && Array.isArray(snapshot.leads)) {
-        return snapshot;
+        return withPreparedSnapshot(snapshot);
       }
     }
   } catch (error) {
@@ -1230,7 +1531,10 @@ function readLegacyCsvSnapshot() {
     }
 
     const headers = rows[0];
-    const leads = rows.slice(1).map((row) => csvRowToLead(headers, row)).filter(Boolean);
+  const leads = rows
+    .slice(1)
+    .map((row) => csvRowToLead(headers, row))
+    .filter(shouldIncludeLead);
     if (leads.length === 0) {
       return null;
     }
@@ -1240,7 +1544,6 @@ function readLegacyCsvSnapshot() {
       meta: {
         returnedLeads: leads.length,
         requestedLeads: leads.length,
-        qualifiedLeads: leads.filter((lead) => lead.qualified).length,
         selectedSource: GOOGLE_MAPS_SOURCE,
         warnings: [],
       },
@@ -1265,20 +1568,34 @@ function csvRowToLead(headers, row) {
   }
 
   const website = record.Website || "";
-  const needsWebsite = !website;
+  const websiteAssessment = getExistingWebsiteAssessment({
+    website,
+    websiteStatus: record["Website Status"],
+    websiteFoundUrl: record["Website URL"] || website,
+    websiteCheckedUrl: record["Checked Website URL"],
+    websiteReason: record["Website Reason"],
+    websiteNote: record["Website Note"],
+  });
+  const phoneNumber = normalizePhone(record.Phone || record["Phone Number"] || "");
+  if (!phoneNumber) {
+    return null;
+  }
 
-  return {
+  return withWebsiteAssessment({
     companyName,
     personName: "N/A",
     username: "N/A",
-    phoneNumber: record.Phone || record["Phone Number"] || "N/A",
+    phoneNumber,
     type: record.Category || record.Type || "Unknown",
     address: record.Address || "N/A",
     source: GOOGLE_MAPS_SOURCE,
-    qualified: false,
-    qualificationScore: Number(record["Qualification Score"]) || 0,
     website: website || "N/A",
-    needsWebsite,
+    needsWebsite: !websiteAssessment.hasRealWebsite,
+    websiteStatus: websiteAssessment.websiteStatus,
+    websiteFoundUrl: websiteAssessment.websiteFoundUrl,
+    websiteCheckedUrl: websiteAssessment.websiteCheckedUrl,
+    websiteReason: websiteAssessment.websiteReason,
+    websiteNote: websiteAssessment.websiteNote,
     sourceUrl: record.Maps || record["Google Maps URL"] || "N/A",
     content: "N/A",
     impliedNeedContent: "N/A",
@@ -1286,7 +1603,7 @@ function csvRowToLead(headers, row) {
     sentimentLabel: "unknown",
     sentimentScore: 0,
     intentScore: 0,
-  };
+  });
 }
 
 function buildLeadsCsv(leads) {
@@ -1298,19 +1615,31 @@ function buildLeadsCsv(leads) {
     "Address",
     "Needs Website",
     "Website",
+    "Website Status",
+    "Checked Website URL",
+    "Website Reason",
+    "Website Note",
     "Google Maps URL",
   ];
 
-  const rows = leads.map((lead, index) => [
-    index + 1,
-    lead.companyName || "",
-    lead.phoneNumber || "",
-    lead.type || "",
-    lead.address || "",
-    lead.needsWebsite ? "Yes" : "No",
-    lead.website === "N/A" ? "" : lead.website || "",
-    lead.sourceUrl === "N/A" ? "" : lead.sourceUrl || "",
-  ]);
+  const rows = (Array.isArray(leads) ? leads : [])
+    .filter(hasPhoneNumber)
+    .map((lead) => withWebsiteAssessment(lead))
+    .filter(shouldIncludeLead)
+    .map((lead, index) => [
+      index + 1,
+      lead.companyName || "",
+      lead.phoneNumber || "",
+      lead.type || "",
+      lead.address || "",
+      lead.needsWebsite ? "Yes" : "No",
+      lead.website === "N/A" ? "" : lead.website || "",
+      lead.websiteStatus || "",
+      lead.websiteCheckedUrl === "N/A" ? "" : lead.websiteCheckedUrl || "",
+      lead.websiteReason || "",
+      lead.websiteNote || "",
+      lead.sourceUrl === "N/A" ? "" : lead.sourceUrl || "",
+    ]);
 
   return [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
 }

@@ -292,7 +292,7 @@ button:disabled {
 
 table {
   width: 100%;
-  min-width: 920px;
+  min-width: 1100px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 0.78rem;
@@ -365,6 +365,33 @@ tbody tr:nth-child(even) {
   font-weight: 700;
 }
 
+.notes-cell {
+  min-width: 0;
+}
+
+.lead-note-input {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.35;
+  outline: none;
+}
+
+.lead-note-input:focus {
+  border-color: rgba(34, 199, 160, 0.55);
+  box-shadow: 0 0 0 2px rgba(34, 199, 160, 0.12);
+}
+
+.lead-note-input::placeholder {
+  color: var(--muted);
+}
+
 .number-cell {
   color: var(--muted-strong);
   font-weight: 700;
@@ -379,7 +406,7 @@ tbody tr:nth-child(even) {
 
 #resultsTable th:nth-child(2),
 #resultsTable td:nth-child(2) {
-  width: 15%;
+  width: 16%;
 }
 
 #resultsTable th:nth-child(3),
@@ -389,12 +416,12 @@ tbody tr:nth-child(even) {
 
 #resultsTable th:nth-child(4),
 #resultsTable td:nth-child(4) {
-  width: 12%;
+  width: 10%;
 }
 
 #resultsTable th:nth-child(5),
 #resultsTable td:nth-child(5) {
-  width: 22%;
+  width: 21%;
 }
 
 #resultsTable th:nth-child(6),
@@ -404,12 +431,12 @@ tbody tr:nth-child(even) {
 
 #resultsTable th:nth-child(7),
 #resultsTable td:nth-child(7) {
-  width: 14%;
+  width: 10%;
 }
 
 #resultsTable th:nth-child(8),
 #resultsTable td:nth-child(8) {
-  width: 9%;
+  width: 15%;
 }
 
 @media (max-width: 1080px) {
@@ -447,6 +474,6 @@ tbody tr:nth-child(even) {
   }
 
   table {
-    min-width: 860px;
+    min-width: 1040px;
   }
 }

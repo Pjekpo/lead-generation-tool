@@ -1,4 +1,5 @@
 const SOURCE_LABEL = "Google Maps";
+const LEAD_NOTES_STORAGE_KEY = "lead-generation-tool:lead-notes:v1";
 
 const form = document.getElementById("leadForm");
 const statusEl = document.getElementById("status");
@@ -12,6 +13,7 @@ const printLastRunBtn = document.getElementById("printLastRunBtn");
 const exportCsvBtn = document.getElementById("exportCsvBtn");
 const locationInput = document.getElementById("location");
 const placesPerSearchInput = document.getElementById("placesPerSearch");
+const leadNotes = loadLeadNotes();
 
 addSearchTermBtn.addEventListener("click", () => {
   addSearchTermRow("");
@@ -38,6 +40,7 @@ removeEmptyBtn.addEventListener("click", () => {
 
 printLastRunBtn.addEventListener("click", printLastResults);
 exportCsvBtn.addEventListener("click", exportLastResultsCsv);
+resultsBody.addEventListener("input", handleLeadNoteInput);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -84,9 +87,7 @@ form.addEventListener("submit", async (event) => {
       ? ` Warnings: ${(meta.warnings || []).join(" | ")}`
       : "";
     setStatus(
-      `Returned ${meta.returnedLeads || 0}/${meta.requestedLeads || leadCount} leads. Qualified: ${
-        meta.qualifiedLeads || 0
-      }. Source: ${SOURCE_LABEL}.${warningText}`
+      `Returned ${meta.returnedLeads || 0}/${meta.requestedLeads || leadCount} leads. Source: ${SOURCE_LABEL}.${warningText}`
     );
   } catch (error) {
     setStatus(error.message || "Unable to generate leads.", true);
@@ -111,11 +112,8 @@ async function printLastResults() {
 
     const leads = payload.leads || [];
     renderLeads(leads);
-    const meta = payload.meta || {};
     const savedAt = payload.savedAt ? ` Saved: ${formatDateTime(payload.savedAt)}.` : "";
-    setStatus(
-      `Printed ${leads.length} saved leads. Qualified: ${meta.qualifiedLeads || 0}.${savedAt}`
-    );
+    setStatus(`Printed ${leads.length} saved leads.${savedAt}`);
   } catch (error) {
     setStatus(error.message || "Unable to load saved results.", true);
   } finally {
@@ -236,9 +234,14 @@ function renderLeads(leads) {
 
   const rows = leads
     .map((lead, index) => {
-      const websiteCell = renderSourceLink(lead.website);
       const sourceUrlCell = renderSourceLink(lead.sourceUrl);
       const needsWebsite = Boolean(lead.needsWebsite);
+      const websiteStatus = lead.websiteStatus || (needsWebsite ? "No website found" : "Proper website");
+      const websiteCell = websiteStatus === "No website found"
+        ? '<span class="missing-website">No website found</span>'
+        : renderSourceLink(lead.website);
+      const noteKey = getLeadNoteKey(lead);
+      const savedNote = leadNotes[noteKey] || "";
 
       return `
         <tr class="${needsWebsite ? "needs-website-row" : ""}">
@@ -247,15 +250,79 @@ function renderLeads(leads) {
           <td>${escapeHtml(lead.phoneNumber || "N/A")}</td>
           <td>${escapeHtml(lead.type || "N/A")}</td>
           <td>${escapeHtml(lead.address || "N/A")}</td>
-          <td>${needsWebsite ? '<span class="flag-badge">Needs website</span>' : "No"}</td>
-          <td class="url-cell">${needsWebsite ? '<span class="missing-website">No website found</span>' : websiteCell}</td>
+          <td class="url-cell">${websiteCell}</td>
           <td class="url-cell">${sourceUrlCell}</td>
+          <td class="notes-cell">
+            <textarea
+              class="lead-note-input"
+              data-note-key="${escapeHtml(noteKey)}"
+              rows="3"
+              placeholder="Call notes"
+            >${escapeHtml(savedNote)}</textarea>
+          </td>
         </tr>
       `;
     })
     .join("");
 
   resultsBody.innerHTML = rows;
+}
+
+function handleLeadNoteInput(event) {
+  const input = event.target;
+  if (!input.classList.contains("lead-note-input")) {
+    return;
+  }
+
+  const noteKey = input.dataset.noteKey;
+  if (!noteKey) {
+    return;
+  }
+
+  const note = input.value.trim();
+  if (note) {
+    leadNotes[noteKey] = input.value;
+  } else {
+    delete leadNotes[noteKey];
+  }
+  saveLeadNotes();
+}
+
+function getLeadNoteKey(lead) {
+  return [
+    lead.companyName,
+    lead.phoneNumber,
+    lead.address,
+    lead.sourceUrl,
+  ]
+    .map(normalizeNoteKeyPart)
+    .filter(Boolean)
+    .join("|");
+}
+
+function normalizeNoteKeyPart(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9+@:/?.&=# -]/g, "");
+}
+
+function loadLeadNotes() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LEAD_NOTES_STORAGE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveLeadNotes() {
+  try {
+    localStorage.setItem(LEAD_NOTES_STORAGE_KEY, JSON.stringify(leadNotes));
+  } catch (error) {
+    console.warn("Unable to save lead note.", error);
+  }
 }
 
 function setStatus(message, isError = false) {

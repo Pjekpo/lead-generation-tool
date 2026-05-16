@@ -2,8 +2,7 @@ node_modules
 .env
 .env.local
 npm-debug.log*
-dev.log
-dev.err.log
+dev*.log
 server-start*.log
 .last-run-results.json
 last-run-results.csv
